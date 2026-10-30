@@ -45,7 +45,7 @@
     - `get_jpeg_frame() -> bytes`
     - `start()`, `stop()`
 
-- [ ] **Step 1: Write unit tests for ArUco generation, detection, and displacement tracking**
+- [x] **Step 1: Write unit tests for ArUco generation, detection, and displacement tracking**
 
 ```python
 # In STM32_IMU/tools/test_camera_ground_truth.py
@@ -73,16 +73,16 @@ def test_detect_marker_pose_synthetic():
     assert data["pos_cm"][2] > 0.0  # Positive depth Z
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python3 -m pytest "/home/rifai/Imu_MOTION TRACKER/STM32_IMU/tools/test_camera_ground_truth.py"`
 Expected: FAIL (module `camera_ground_truth` not found).
 
-- [ ] **Step 3: Implement `camera_ground_truth.py`**
+- [x] **Step 3: Implement `camera_ground_truth.py`**
 
 Implement `generate_aruco_marker_png` and `CameraGroundTruthTracker` with robust OpenCV ArUco detector (handling both OpenCV 4.5 and 4.7+ API variants), pinhole camera matrix estimation, running tare vector, and thread-safe frame grabbing.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest "/home/rifai/Imu_MOTION TRACKER/STM32_IMU/tools/test_camera_ground_truth.py"`
 Expected: PASS (2/2 tests pass).
