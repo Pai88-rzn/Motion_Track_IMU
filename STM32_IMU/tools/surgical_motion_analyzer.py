@@ -164,6 +164,11 @@ class SurgicalMotionAnalyzer:
         self.zupt_counter = 0
         self.is_stationary = True
 
+        # Adaptive stroke filter & per-axis optical calibration scales (Kx, Ky, Kz)
+        self.stroke_scale: List[float] = [1.0, 1.0, 1.0]
+        self.stroke_active: bool = False
+        self.stroke_latch_frames: int = 0
+
         # Sliding window buffers for unsupervised pattern analysis (6 seconds @ 100 Hz = 600 samples)
         self.win_size = int(6.0 * fs_hz)
         self.gyro_hist: Deque[Tuple[float, float, float]] = deque(maxlen=self.win_size)
@@ -232,6 +237,14 @@ class SurgicalMotionAnalyzer:
         """Resets the surgical site origin offset back to zero."""
         self.pos_origin_cm = [0.0, 0.0, 0.0]
 
+    def set_stroke_scales(self, scale_x: float, scale_y: float, scale_z: float):
+        """Sets calibrated per-axis stroke scaling factors for trajectory integration."""
+        self.stroke_scale = [float(scale_x), float(scale_y), float(scale_z)]
+
+    def get_stroke_scales(self) -> Tuple[float, float, float]:
+        """Returns the current per-axis stroke scaling factors (kx, ky, kz)."""
+        return (float(self.stroke_scale[0]), float(self.stroke_scale[1]), float(self.stroke_scale[2]))
+
     def end_session(self) -> Dict:
         """Ends the surgical test recording session and returns the final report."""
         self.is_recording = False
@@ -269,6 +282,8 @@ class SurgicalMotionAnalyzer:
             self.pattern_counts[k] = 0
         self.active_time_s = 0.0
         self.idle_time_s = 0.0
+        self.stroke_active = False
+        self.stroke_latch_frames = 0
         self._reset_current_cycle(0.0)
 
     def _reset_current_cycle(self, ts: float):
@@ -322,20 +337,34 @@ class SurgicalMotionAnalyzer:
         a_unbiased_b = [a_body[i] - self.acc_bias_body[i] for i in range(3)]
         a_unbiased_mag = math.sqrt(sum(x * x for x in a_unbiased_b))
 
-        # Robust stationary detection in body frame:
-        # A) Gyro quiet (< 3.0 dps) and body acceleration steady (delta_a < 0.08 m/s^2),
-        #    enabling immediate zero-bias convergence of sensor silicon offsets
-        # OR B) Gyro < 7.0 dps and unbiased body acceleration < 0.15 m/s^2
-        is_still = (gyro_mag_dps < 3.0 and delta_a_body < 0.08) or (gyro_mag_dps < 7.0 and a_unbiased_mag < 0.15)
+        # Rotate unbiased body acceleration to Earth/World frame using quaternion
+        aw_x, aw_y, aw_z = rotate_vector_by_quat(a_unbiased_b[0], a_unbiased_b[1], a_unbiased_b[2], qw, qx, qy, qz)
+        aw = [aw_x, aw_y, aw_z]
+        acc_mag_mps2 = math.sqrt(aw_x * aw_x + aw_y * aw_y + aw_z * aw_z)
+
+        # Compute world jerk (da/dt in m/s^3)
+        jerk_sq = 0.0
+        for i in range(3):
+            jerk_i = (aw[i] - self.prev_acc_world[i]) / dt
+            jerk_sq += jerk_i * jerk_i
+            self.prev_acc_world[i] = aw[i]
+        jerk_mag = math.sqrt(jerk_sq)
+
+        # Robust stationary detection:
+        # A) Gyro quiet (< 3.0 dps) and body acceleration steady (delta_a < 0.08 m/s^2) with resting accel (< 0.25 m/s^2)
+        # OR B) Gyro < 7.0 dps and unbiased body acceleration < 0.15 m/s^2,
+        # PROVIDED world jerk is low (<= 0.8 m/s^3) so rapid direction reversals are not flagged stationary
+        is_still = (
+            ((gyro_mag_dps < 3.0 and delta_a_body < 0.08 and a_unbiased_mag < 0.25)
+             or (gyro_mag_dps < 7.0 and a_unbiased_mag < 0.15))
+            and (jerk_mag <= 0.8)
+        )
         if is_still:
             self.zupt_counter += 1
         else:
             self.zupt_counter = 0
 
         self.is_stationary = self.zupt_counter >= 15
-
-        # Acceleration deadband in body frame (~0.025 m/s^2 = 2.5 cm/s^2)
-        deadband_mps2 = 0.025
 
         if self.is_stationary:
             for i in range(3):
@@ -347,22 +376,37 @@ class SurgicalMotionAnalyzer:
                 # Hold position steady at destination for 1.0s (100 frames);
                 # then gently bleed residual offset back to surgical origin to prevent long-term drift
                 if self.zupt_counter > 100:
-                    self.pos_dyn_cm[i] = self.pos_origin_cm[i] + (self.pos_dyn_cm[i] - self.pos_origin_cm[i]) * 0.88
+                    self.pos_dyn_cm[i] = self.pos_origin_cm[i] + (self.pos_dyn_cm[i] - self.pos_origin_cm[i]) * 0.85
                     if abs(self.pos_dyn_cm[i] - self.pos_origin_cm[i]) < 0.01:
                         self.pos_dyn_cm[i] = self.pos_origin_cm[i]
 
-        # Subtract body bias and deadband
-        a_clean_b = [a_body[i] - self.acc_bias_body[i] for i in range(3)]
-        for i in range(3):
-            if abs(a_clean_b[i]) > deadband_mps2:
-                a_clean_b[i] -= math.copysign(deadband_mps2, a_clean_b[i])
-            else:
-                a_clean_b[i] = 0.0
+        # Adaptive stroke detection & jerk-assisted stroke latching
+        a_thresh = 0.08  # m/s^2 noise floor threshold
+        has_accel = any(abs(aw[i]) > a_thresh for i in range(3))
+        has_jerk = jerk_mag > 0.8  # m/s^3 jerk latch threshold
+        v_mag = math.sqrt(sum(v * v for v in self.vel_cm_s))
+        has_vel = v_mag > 0.8  # cm/s
 
-        # Rotate clean body acceleration to Earth/World frame using quaternion
-        aw_x, aw_y, aw_z = rotate_vector_by_quat(a_clean_b[0], a_clean_b[1], a_clean_b[2], qw, qx, qy, qz)
-        aw = [aw_x, aw_y, aw_z]
-        acc_mag_mps2 = math.sqrt(aw_x * aw_x + aw_y * aw_y + aw_z * aw_z)
+        if has_jerk:
+            # Latch stroke active across rapid reversals / zero crossings
+            self.stroke_latch_frames = int(0.20 * self.fs_hz)
+        elif self.stroke_latch_frames > 0:
+            self.stroke_latch_frames -= 1
+
+        if self.is_stationary:
+            self.stroke_active = False
+            self.stroke_latch_frames = 0
+        else:
+            self.stroke_active = has_accel or has_jerk or has_vel or (self.stroke_latch_frames > 0)
+
+        # Power-law non-linear transient boost & deadband during active stroke:
+        # a_eff = sign(aw) * max(0, |aw| - a_thresh)^1.1 * K_axis
+        a_eff = [0.0, 0.0, 0.0]
+        for i in range(3):
+            val = aw[i]
+            sign = 1.0 if val > 0.0 else (-1.0 if val < 0.0 else 0.0)
+            excess = max(0.0, abs(val) - a_thresh)
+            a_eff[i] = sign * (excess ** 1.1) * self.stroke_scale[i]
 
         # 2. Extract 8-12 Hz physiological tremor power (m/s^2 RMS)
         tremor_sq = 0.0
@@ -373,16 +417,15 @@ class SurgicalMotionAnalyzer:
         tremor_rms = math.sqrt(sum(self.tremor_sq_hist) / max(1, len(self.tremor_sq_hist)))
 
         # 3. Dynamic Velocity & Position Integration
-        jerk_sq = 0.0
-        for i in range(3):
-            jerk_i = (aw[i] - self.prev_acc_world[i]) / dt
-            jerk_sq += jerk_i * jerk_i
-            self.prev_acc_world[i] = aw[i]
-
-            if not self.is_stationary:
-                a_cms2 = aw[i] * 100.0
-                # Light numerical stabilization damping during active motion
-                self.vel_cm_s[i] = (self.vel_cm_s[i] + a_cms2 * dt) * 0.998
+        if not self.is_stationary:
+            for i in range(3):
+                if self.stroke_active:
+                    a_cms2 = a_eff[i] * 100.0
+                    # Light numerical stabilization damping during active stroke
+                    self.vel_cm_s[i] = (self.vel_cm_s[i] + a_cms2 * dt) * 0.998
+                else:
+                    # Bleed velocity when stroke inactive and not yet stationary
+                    self.vel_cm_s[i] *= 0.85
                 self.pos_dyn_cm[i] += self.vel_cm_s[i] * dt
 
         # Operating Table Workspace Clamping:
@@ -745,6 +788,12 @@ class SurgicalMotionAnalyzer:
                 round(self.vel_cm_s[2], 1),
             ],
             "is_stationary": self.is_stationary,
+            "stroke_active": bool(self.stroke_active),
+            "stroke_scale": [
+                round(float(self.stroke_scale[0]), 4),
+                round(float(self.stroke_scale[1]), 4),
+                round(float(self.stroke_scale[2]), 4),
+            ],
             "rep_count": self.rep_count,
             "activity_state": self.activity_state,
             "pattern_type": self.current_pattern_type,

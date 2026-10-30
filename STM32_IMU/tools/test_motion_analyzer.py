@@ -169,6 +169,86 @@ class TestSurgicalMotionAnalyzer(unittest.TestCase):
         pos_at_stop = pos_y_samples[80]
         self.assertGreater(pos_at_stop, 3.0, f"Position at stop wiped out too quickly: {pos_at_stop} cm")
 
+    def test_adaptive_stroke_scaling(self):
+        """Verify that setting stroke scale doubles integrated displacement for identical acceleration profile."""
+        analyzer1 = SurgicalMotionAnalyzer(fs_hz=100.0)
+        analyzer2 = SurgicalMotionAnalyzer(fs_hz=100.0)
+
+        # Default scale is (1.0, 1.0, 1.0)
+        self.assertEqual(analyzer1.get_stroke_scales(), (1.0, 1.0, 1.0))
+
+        # Set scale_x = 2.0 on analyzer2
+        analyzer2.set_stroke_scales(2.0, 1.0, 1.0)
+        self.assertEqual(analyzer2.get_stroke_scales(), (2.0, 1.0, 1.0))
+
+        # Feed identical acceleration profile along X (40 frames)
+        for i in range(40):
+            t = i * 0.01
+            ax = 1.2 * math.sin(i / 40.0 * math.pi)
+            snap1 = analyzer1.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=ax, ay_mps2=0.0, az_mps2=0.0,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+            snap2 = analyzer2.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=ax, ay_mps2=0.0, az_mps2=0.0,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+
+        # Output payload checks
+        self.assertIn("stroke_active", snap2)
+        self.assertIn("stroke_scale", snap2)
+        self.assertEqual(snap2["stroke_scale"], [2.0, 1.0, 1.0])
+        self.assertTrue(snap2["stroke_active"])
+
+        disp1 = snap1["pos_cm"][0]
+        disp2 = snap2["pos_cm"][0]
+        self.assertGreater(disp1, 0.5, f"Displacement too small: {disp1} cm")
+        self.assertAlmostEqual(disp2, 2.0 * disp1, delta=0.05 * disp2,
+                               msg=f"Displacement not doubled: {disp2} vs 2 * {disp1}")
+
+    def test_stroke_latching_on_rapid_reversal(self):
+        """Verify that quick direction changes do not decay velocity to zero mid-stroke."""
+        analyzer = SurgicalMotionAnalyzer(fs_hz=100.0)
+
+        # 1. Forward stroke along X for 0.20s (20 frames)
+        for i in range(20):
+            t = i * 0.01
+            analyzer.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=1.5, ay_mps2=0.0, az_mps2=0.0,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+
+        # 2. Rapid reversal: jerk transition to -1.5 m/s^2
+        # As velocity crosses zero during rapid reversal, stroke must remain latched active
+        zero_cross_snap = None
+        min_abs_vel = float("inf")
+        reversal_snaps = []
+
+        for i in range(20, 50):
+            t = i * 0.01
+            snap = analyzer.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=-1.5, ay_mps2=0.0, az_mps2=0.0,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+            reversal_snaps.append(snap)
+            vx = abs(snap["vel_cms"][0])
+            if vx < min_abs_vel:
+                min_abs_vel = vx
+                zero_cross_snap = snap
+
+        # Verify that at the zero-velocity crossing point, stroke remained latched active
+        self.assertIsNotNone(zero_cross_snap)
+        self.assertTrue(zero_cross_snap["stroke_active"], "Stroke failed to latch active during zero-velocity crossing!")
+        self.assertFalse(zero_cross_snap["is_stationary"], "Zero crossing falsely classified as stationary!")
+
+        # Verify that velocity successfully reversed to negative rather than decaying or freezing at 0
+        final_vx = reversal_snaps[-1]["vel_cms"][0]
+        self.assertLess(final_vx, -5.0, f"Velocity failed to reverse into negative: {final_vx} cm/s")
+
 
 if __name__ == "__main__":
     unittest.main()

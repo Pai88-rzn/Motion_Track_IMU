@@ -102,18 +102,18 @@ Expected: PASS (2/2 tests pass).
   - `get_stroke_scales() -> Tuple[float, float, float]`
   - `update(...) -> Dict`: Output dictionary includes `stroke_active: bool`, `stroke_scale: [kx, ky, kz]`, calibrated `pos_cm: [x, y, z]`.
 
-- [ ] **Step 1: Write test for adaptive stroke scaling and zero stationary drift**
+- [x] **Step 1: Write test for adaptive stroke scaling and zero stationary drift**
 
 In `test_motion_analyzer.py`, add tests:
 - `test_adaptive_stroke_scaling()`: Verify that setting stroke scale doubles integrated displacement for identical acceleration profile.
 - `test_stroke_latching_on_rapid_reversal()`: Verify that quick direction changes do not decay velocity to zero mid-stroke.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python3 -m pytest "/home/rifai/Imu_MOTION TRACKER/STM32_IMU/tools/test_motion_analyzer.py::test_adaptive_stroke_scaling"`
 Expected: FAIL (`AttributeError: 'SurgicalMotionAnalyzer' object has no attribute 'set_stroke_scales'`).
 
-- [ ] **Step 3: Implement adaptive stroke filtering in `surgical_motion_analyzer.py`**
+- [x] **Step 3: Implement adaptive stroke filtering in `surgical_motion_analyzer.py`**
 
 Add:
 - Attributes `self.stroke_scale = [1.0, 1.0, 1.0]`
@@ -122,7 +122,7 @@ Add:
 - Jerk-assisted stroke latching: hold stroke active when $|\dot{a}| > 0.8\text{ m/s}^3$ even during zero-crossings.
 - Methods `set_stroke_scales(sx, sy, sz)` and `get_stroke_scales()`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest "/home/rifai/Imu_MOTION TRACKER/STM32_IMU/tools/test_motion_analyzer.py"`
 Expected: PASS (All tests pass).
