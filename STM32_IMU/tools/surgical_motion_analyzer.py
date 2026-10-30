@@ -343,9 +343,10 @@ class SurgicalMotionAnalyzer:
         acc_mag_mps2 = math.sqrt(aw_x * aw_x + aw_y * aw_y + aw_z * aw_z)
 
         # Compute world jerk (da/dt in m/s^3)
+        dt_safe = max(0.001, dt)
         jerk_sq = 0.0
         for i in range(3):
-            jerk_i = (aw[i] - self.prev_acc_world[i]) / dt
+            jerk_i = (aw[i] - self.prev_acc_world[i]) / dt_safe
             jerk_sq += jerk_i * jerk_i
             self.prev_acc_world[i] = aw[i]
         jerk_mag = math.sqrt(jerk_sq)

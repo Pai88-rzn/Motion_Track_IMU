@@ -22,7 +22,7 @@ from typing import Set, Optional
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Ensure local imports from tools/ work regardless of current working directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -347,9 +347,9 @@ async def api_reset_origin():
 
 
 class StrokeScalesRequest(BaseModel):
-    scale_x: float = 1.0
-    scale_y: float = 1.0
-    scale_z: float = 1.0
+    scale_x: float = Field(default=1.0, gt=0.01, le=10.0)
+    scale_y: float = Field(default=1.0, gt=0.01, le=10.0)
+    scale_z: float = Field(default=1.0, gt=0.01, le=10.0)
 
 
 @app.post("/api/tare_both")
@@ -471,9 +471,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     latest_imu_data["camera"] = tracker.get_latest_data()
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "set_stroke_scales":
-                    sx = float(cmd.get("scale_x", 1.0))
-                    sy = float(cmd.get("scale_y", 1.0))
-                    sz = float(cmd.get("scale_z", 1.0))
+                    sx = max(0.01, min(10.0, float(cmd.get("scale_x", 1.0))))
+                    sy = max(0.01, min(10.0, float(cmd.get("scale_y", 1.0))))
+                    sz = max(0.01, min(10.0, float(cmd.get("scale_z", 1.0))))
                     analyzer.set_stroke_scales(sx, sy, sz)
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
                     latest_imu_data["camera"] = tracker.get_latest_data()

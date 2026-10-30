@@ -9,6 +9,7 @@ Supports both OpenCV 4.5.x and OpenCV 4.7+ API variants.
 
 import sys
 import time
+import logging
 import threading
 from typing import Dict, Optional, Tuple, Union
 
@@ -136,6 +137,21 @@ class CameraGroundTruthTracker:
         # FPS calculation state
         self._last_frame_time = 0.0
         self._measured_fps = 0.0
+
+        # Pre-encode placeholder frame for offline / waiting state
+        placeholder = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        cv2.putText(
+            placeholder,
+            "Waiting for Camera Stream...",
+            (40, self.height // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (180, 180, 180),
+            2,
+            cv2.LINE_AA,
+        )
+        _, enc_placeholder = cv2.imencode(".jpg", placeholder, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        self._cached_placeholder_jpeg: bytes = enc_placeholder.tobytes()
 
     def _init_camera_matrix(self, width: int, height: int):
         """Initialize pinhole camera matrix with standard 60-degree FOV approximation."""
@@ -306,6 +322,8 @@ class CameraGroundTruthTracker:
                     )
 
                 except Exception as e:
+                    import logging
+                    logging.debug(f"Optical pose estimation failed: {e}")
                     detected = False
 
         if not detected:
@@ -362,26 +380,13 @@ class CameraGroundTruthTracker:
     def get_jpeg_frame(self) -> bytes:
         """
         Return the latest annotated frame encoded as JPEG bytes.
-        If no frame is available yet, generates a placeholder frame.
+        If no frame is available yet, returns pre-encoded placeholder frame.
         """
         with self._lock:
             if self.latest_jpeg:
                 return self.latest_jpeg
 
-        # Generate fallback placeholder frame
-        placeholder = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        cv2.putText(
-            placeholder,
-            "Waiting for Camera Stream...",
-            (40, self.height // 2),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (180, 180, 180),
-            2,
-            cv2.LINE_AA,
-        )
-        _, enc = cv2.imencode(".jpg", placeholder, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        return enc.tobytes()
+        return self._cached_placeholder_jpeg
 
     def _capture_loop(self):
         """Background thread loop capturing frames and updating pose."""

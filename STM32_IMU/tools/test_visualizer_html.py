@@ -82,6 +82,13 @@ def test_ground_truth_comparison_hud(html_soup):
     assert cam_dx is not None and cam_dy is not None and cam_dz is not None, \
         "Missing #cam-delta-x, #cam-delta-y, or #cam-delta-z elements in HUD"
 
+    # Camera mounting selector
+    mount_select = soup.find("select", id="camera-mount-select")
+    assert mount_select is not None, "Missing #camera-mount-select in HUD header"
+    options = [opt.get("value") for opt in mount_select.find_all("option")]
+    assert "frontal" in options and "overhead" in options, \
+        f"Expected 'frontal' and 'overhead' options, got {options}"
+
 
 def test_aruco_marker_modal(html_soup):
     """Verify ArUco Marker modal with printable/scannable marker image and instructions."""
@@ -115,3 +122,7 @@ def test_javascript_handlers_present(html_soup):
     # data.camera handling
     assert "data.camera" in content or "latestData.camera" in content, \
         "Missing handling for data.camera in script"
+
+    # Camera-to-world axis mapping
+    assert "delta_world" in content, "Missing delta_world camera-to-world axis mapping in script"
+    assert "frontal" in content and "overhead" in content, "Missing frontal and overhead mount branches in script"

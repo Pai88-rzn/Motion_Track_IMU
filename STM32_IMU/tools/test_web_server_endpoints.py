@@ -62,6 +62,17 @@ def test_api_set_stroke_scales(client):
     assert analyzer.get_stroke_scales() == (1.25, 0.85, 1.10)
 
 
+def test_api_set_stroke_scales_validation(client):
+    """Verify POST /api/set_stroke_scales rejects values <= 0.01 or > 10.0 with HTTP 422."""
+    # Under lower bound (<= 0.01)
+    res_low = client.post("/api/set_stroke_scales", json={"scale_x": 0.005, "scale_y": 1.0, "scale_z": 1.0})
+    assert res_low.status_code == 422
+
+    # Over upper bound (> 10.0)
+    res_high = client.post("/api/set_stroke_scales", json={"scale_x": 1.0, "scale_y": 12.0, "scale_z": 1.0})
+    assert res_high.status_code == 422
+
+
 def test_video_feed_streaming(client):
     """Verify GET /video_feed returns multipart/x-mixed-replace with JPEG frames."""
     response = client.get("/video_feed?max_frames=1")
@@ -137,6 +148,23 @@ def test_websocket_set_stroke_scales_action(client):
         assert "analytics" in msg
         assert msg["analytics"]["stroke_scale"] == [1.08, 0.92, 1.01]
         assert analyzer.get_stroke_scales() == (1.08, 0.92, 1.01)
+
+
+def test_websocket_set_stroke_scales_clamping(client):
+    """Verify WebSocket set_stroke_scales action clamps out-of-range values to [0.01, 10.0]."""
+    with client.websocket_connect("/ws") as ws:
+        if latest_imu_data.get("ts", 0.0) > 0:
+            _ = ws.receive_json()
+        ws.send_json({
+            "action": "set_stroke_scales",
+            "scale_x": -2.0,   # Should clamp to 0.01
+            "scale_y": 25.0,   # Should clamp to 10.0
+            "scale_z": 0.001   # Should clamp to 0.01
+        })
+        msg = ws.receive_json()
+        assert "analytics" in msg
+        assert msg["analytics"]["stroke_scale"] == [0.01, 10.0, 0.01]
+        assert analyzer.get_stroke_scales() == (0.01, 10.0, 0.01)
 
 
 def test_graceful_degradation_offline_camera():

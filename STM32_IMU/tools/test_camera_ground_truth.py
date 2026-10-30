@@ -188,3 +188,58 @@ def test_concurrent_tare_and_process_frame():
 
     assert len(errors) == 0
 
+
+def test_tracker_lifecycle_mock_camera():
+    """Verify tracker.start() and tracker.stop() lifecycle with mock camera capture."""
+    from unittest.mock import MagicMock, patch
+
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+    mock_cap.read.return_value = (True, canvas)
+
+    with patch("cv2.VideoCapture", return_value=mock_cap):
+        tracker = CameraGroundTruthTracker(video_source=0, target_fps=30)
+        assert not tracker._running
+        assert tracker._thread is None
+
+        tracker.start()
+        assert tracker._running
+        assert tracker._thread is not None
+        assert tracker._thread.is_alive()
+
+        # Let capture loop execute
+        import time
+        time.sleep(0.08)
+
+        # Stop tracker and verify clean release
+        tracker.stop()
+        assert not tracker._running
+        assert tracker._thread is None
+        assert mock_cap.release.called
+
+
+def test_cached_placeholder_jpeg():
+    """Verify tracker pre-encodes placeholder JPEG and reuses it without re-encoding on offline frames."""
+    tracker = CameraGroundTruthTracker(video_source=-1)
+    assert hasattr(tracker, "_cached_placeholder_jpeg")
+    assert tracker._cached_placeholder_jpeg.startswith(b"\xff\xd8")
+    frame1 = tracker.get_jpeg_frame()
+    frame2 = tracker.get_jpeg_frame()
+    assert frame1 is tracker._cached_placeholder_jpeg
+    assert frame2 is tracker._cached_placeholder_jpeg
+
+
+def test_pose_estimation_exception_logging(caplog):
+    """Verify that pose estimation failure logs a debug message instead of silent pass."""
+    import logging
+    from unittest.mock import patch
+    tracker = CameraGroundTruthTracker(video_source=-1)
+    with caplog.at_level(logging.DEBUG):
+        with patch.object(tracker, "_detect_markers", return_value=([np.array([[[1, 2]]])], np.array([[0]]), None)):
+            with patch.object(tracker, "_estimate_pose", side_effect=RuntimeError("Test OpenCV solvePnP failure")):
+                canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+                annotated, data = tracker.process_frame(canvas)
+                assert data["detected"] is False
+                assert any("Optical pose estimation failed" in r.message for r in caplog.records)
+

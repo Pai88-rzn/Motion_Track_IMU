@@ -271,6 +271,34 @@ class TestSurgicalMotionAnalyzer(unittest.TestCase):
         pos = snap["pos_cm"]
         self.assertEqual(pos, [0.0, 0.0, 0.0], f"Position drifted under ambient vibration: {pos}")
 
+    def test_zero_division_protection_in_jerk(self):
+        """Verify that dt <= 0 (e.g. duplicate timestamps) does not raise ZeroDivisionError in jerk calculation."""
+        analyzer = SurgicalMotionAnalyzer(fs_hz=100.0)
+
+        # Initial frame at ts=1.0
+        snap1 = analyzer.update(
+            ts=1.0, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+            ax_mps2=0.5, ay_mps2=0.0, az_mps2=0.0,
+            gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+        )
+        self.assertIsNotNone(snap1)
+
+        # Consecutive frame with identical timestamp (dt = 0.0)
+        snap2 = analyzer.update(
+            ts=1.0, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+            ax_mps2=1.5, ay_mps2=0.0, az_mps2=0.0,
+            gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+        )
+        self.assertIsNotNone(snap2)
+
+        # Frame with backwards timestamp (dt < 0)
+        snap3 = analyzer.update(
+            ts=0.5, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+            ax_mps2=0.8, ay_mps2=0.0, az_mps2=0.0,
+            gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+        )
+        self.assertIsNotNone(snap3)
+
 
 if __name__ == "__main__":
     unittest.main()

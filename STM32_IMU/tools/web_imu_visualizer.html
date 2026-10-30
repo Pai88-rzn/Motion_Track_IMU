@@ -525,8 +525,15 @@
 
         <!-- Ground-Truth Comparison HUD -->
         <div class="pip-hud" id="pip-hud">
-          <div class="hud-header">
+          <div class="hud-header" style="display: flex; justify-content: space-between; align-items: center;">
             <span>IMU vs Optical Ground Truth HUD</span>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <label for="camera-mount-select" style="font-size: 0.62rem; color: #64748b; text-transform: none;">Mount:</label>
+              <select id="camera-mount-select" style="background: #0f172a; border: 1px solid #334155; color: #94a3b8; font-size: 0.62rem; border-radius: 3px; padding: 1px 4px; outline: none; cursor: pointer;">
+                <option value="frontal" selected>Frontal (Default)</option>
+                <option value="overhead">Overhead</option>
+              </select>
+            </div>
           </div>
           <table class="hud-table">
             <thead>
@@ -1415,16 +1422,34 @@
           fpsBadge.textContent = `${cam.fps.toFixed(1)} FPS`;
         }
 
-        // Camera absolute pose
-        const cpx = (cam.pos_cm && cam.pos_cm.length >= 3) ? cam.pos_cm[0] : 0.0;
-        const cpy = (cam.pos_cm && cam.pos_cm.length >= 3) ? cam.pos_cm[1] : 0.0;
-        const cpz = (cam.pos_cm && cam.pos_cm.length >= 3) ? cam.pos_cm[2] : 0.0;
+        // Camera relative displacement from optical origin
+        const cdx = (cam.delta_cm && cam.delta_cm.length >= 3) ? cam.delta_cm[0] : 0.0;
+        const cdy = (cam.delta_cm && cam.delta_cm.length >= 3) ? cam.delta_cm[1] : 0.0;
+        const cdz = (cam.delta_cm && cam.delta_cm.length >= 3) ? cam.delta_cm[2] : 0.0;
+        const relEl = document.getElementById('hud-cam-rel');
+        if (relEl) {
+          relEl.textContent = `[${cdx.toFixed(1)}, ${cdy.toFixed(1)}, ${cdz.toFixed(1)}]`;
+        }
+
+        // Camera-to-World Axis Mapping based on mounting configuration
+        const mountSelect = document.getElementById('camera-mount-select');
+        const mount = mountSelect ? mountSelect.value : 'frontal';
+        let delta_world = [cdx, cdz, -cdy];
+        if (mount === 'overhead') {
+          // Overhead mount: Cam X -> World X, Cam Y -> World Y, Cam Z -> World -Z
+          delta_world = [cdx, cdy, -cdz];
+        } else {
+          // Frontal mount (Default): Cam X -> World X, Cam Y -> World -Z, Cam Z -> World Y
+          delta_world = [cdx, cdz, -cdy];
+        }
+
+        // Camera Ground Truth world position
         const elCpx = document.getElementById('cam-pos-x');
         const elCpy = document.getElementById('cam-pos-y');
         const elCpz = document.getElementById('cam-pos-z');
-        if (elCpx) elCpx.textContent = cpx.toFixed(1);
-        if (elCpy) elCpy.textContent = cpy.toFixed(1);
-        if (elCpz) elCpz.textContent = cpz.toFixed(1);
+        if (elCpx) elCpx.textContent = cam.detected ? delta_world[0].toFixed(1) : '0.0';
+        if (elCpy) elCpy.textContent = cam.detected ? delta_world[1].toFixed(1) : '0.0';
+        if (elCpz) elCpz.textContent = cam.detected ? delta_world[2].toFixed(1) : '0.0';
 
         // IMU position
         const imu_x = an ? (an.pos_cm[0] - tarePos.x) : 0.0;
@@ -1437,25 +1462,16 @@
         if (elImuY) elImuY.textContent = imu_y.toFixed(1);
         if (elImuZ) elImuZ.textContent = imu_z.toFixed(1);
 
-        // Camera relative displacement from optical origin
-        const cdx = (cam.delta_cm && cam.delta_cm.length >= 3) ? cam.delta_cm[0] : 0.0;
-        const cdy = (cam.delta_cm && cam.delta_cm.length >= 3) ? cam.delta_cm[1] : 0.0;
-        const cdz = (cam.delta_cm && cam.delta_cm.length >= 3) ? cam.delta_cm[2] : 0.0;
-        const relEl = document.getElementById('hud-cam-rel');
-        if (relEl) {
-          relEl.textContent = `[${cdx.toFixed(1)}, ${cdy.toFixed(1)}, ${cdz.toFixed(1)}]`;
-        }
-
-        // Tracking error: IMU - Cam displacement
+        // Tracking error: IMU - Camera world displacement
         const elCdx = document.getElementById('cam-delta-x');
         const elCdy = document.getElementById('cam-delta-y');
         const elCdz = document.getElementById('cam-delta-z');
         const errDistEl = document.getElementById('hud-error-dist');
 
         if (cam.detected) {
-          const err_x = imu_x - cdx;
-          const err_y = imu_y - cdy;
-          const err_z = imu_z - cdz;
+          const err_x = imu_x - delta_world[0];
+          const err_y = imu_y - delta_world[1];
+          const err_z = imu_z - delta_world[2];
           const err3d = Math.sqrt(err_x * err_x + err_y * err_y + err_z * err_z);
 
           if (elCdx) elCdx.textContent = (err_x >= 0 ? '+' : '') + err_x.toFixed(1);
