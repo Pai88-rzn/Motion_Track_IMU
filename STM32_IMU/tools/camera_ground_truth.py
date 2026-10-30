@@ -59,6 +59,56 @@ def generate_aruco_marker_png(marker_id: int = 0, size_px: int = 400) -> bytes:
     return buffer.tobytes()
 
 
+def draw_analyzer_box(
+    image: np.ndarray,
+    bbox: Tuple[int, int, int, int],
+    label: str = "IMU BALOK HITAM",
+    color: Tuple[int, int, int] = (0, 240, 255),
+    is_locked: bool = True,
+):
+    """
+    Draws a high-visibility futuristic analyzer tracking box with corner brackets,
+    center crosshair, and label pill directly on the camera frame.
+    """
+    x, y, w, h = [int(v) for v in bbox]
+    h_img, w_img = image.shape[:2]
+    x = max(0, min(w_img - 1, x))
+    y = max(0, min(h_img - 1, y))
+    w = max(4, min(w_img - x, w))
+    h = max(4, min(h_img - y, h))
+
+    cx, cy = x + w // 2, y + h // 2
+    arm = max(8, min(24, min(w, h) // 4))
+    thickness = 2 if is_locked else 1
+
+    # Corner brackets (L-shaped corners)
+    cv2.line(image, (x, y), (x + arm, y), color, thickness)
+    cv2.line(image, (x, y), (x, y + arm), color, thickness)
+    cv2.line(image, (x + w, y), (x + w - arm, y), color, thickness)
+    cv2.line(image, (x + w, y), (x + w, y + arm), color, thickness)
+    cv2.line(image, (x, y + h), (x + arm, y + h), color, thickness)
+    cv2.line(image, (x, y + h), (x, y + h - arm), color, thickness)
+    cv2.line(image, (x + w, y + h), (x + w - arm, y + h), color, thickness)
+    cv2.line(image, (x + w, y + h), (x + w, y + h - arm), color, thickness)
+
+    # Subtle bounding box outline
+    cv2.rectangle(image, (x, y), (x + w, y + h), color, 1, cv2.LINE_AA)
+
+    # Center crosshair
+    ch = 8
+    cv2.line(image, (cx - ch, cy), (cx + ch, cy), color, 1)
+    cv2.line(image, (cx, cy - ch), (cx, cy + ch), color, 1)
+    cv2.circle(image, (cx, cy), 3, (0, 255, 128) if is_locked else (0, 200, 255), -1)
+
+    # Label tag banner
+    tag_text = f"[{label}]"
+    (tw, th), _ = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+    tag_y = max(th + 6, y - 6)
+    cv2.rectangle(image, (x, tag_y - th - 4), (x + tw + 8, tag_y + 2), (18, 22, 32), -1)
+    cv2.rectangle(image, (x, tag_y - th - 4), (x + tw + 8, tag_y + 2), color, 1)
+    cv2.putText(image, tag_text, (x + 4, tag_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1, cv2.LINE_AA)
+
+
 class CameraGroundTruthTracker:
     """
     Thread-safe optical pose tracker using ArUco fiducial markers.
@@ -115,6 +165,12 @@ class CameraGroundTruthTracker:
         self._tare_requested: bool = False
         self._last_pos: Optional[np.ndarray] = None
 
+        # Optical object tracker for physical IMU enclosure (black block)
+        self.object_tracker = None
+        self.object_bbox: Optional[Tuple[int, int, int, int]] = None
+        self.tracking_mode: str = "auto"  # "aruco", "block", "reticle"
+        self._pending_roi: Optional[Tuple[int, int, int, int]] = None
+
         # Threading and synchronization
         self._lock = threading.Lock()
         self._running = False
@@ -124,12 +180,14 @@ class CameraGroundTruthTracker:
         # Telemetry & Frame caching
         self.latest_data: Dict = {
             "detected": False,
+            "mode": "searching",
             "pos_cm": [0.0, 0.0, 0.0],
             "delta_cm": [0.0, 0.0, 0.0],
             "fps": 0.0,
             "marker_id": self.target_marker_id,
             "timestamp": 0.0,
             "status": "ready",
+            "bbox": None,
         }
         self.latest_frame: Optional[np.ndarray] = None
         self.latest_jpeg: bytes = b""
@@ -180,6 +238,59 @@ class CameraGroundTruthTracker:
                 self.tare_origin = None
 
             self.latest_data["delta_cm"] = [0.0, 0.0, 0.0]
+
+    def set_tracking_roi(self, bbox: Tuple[int, int, int, int]):
+        """Sets or locks the tracking ROI box to track the physical black block."""
+        with self._lock:
+            self._pending_roi = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+            self._tare_requested = True
+
+    def reset_tracker(self):
+        """Resets object tracking back to searching/center target reticle."""
+        with self._lock:
+            self.object_tracker = None
+            self.object_bbox = None
+            self._pending_roi = None
+            self.tare_origin = None
+            self._tare_requested = True
+
+    def auto_detect_black_block(
+        self, frame: np.ndarray, require_center: bool = True
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """Detects prominent dark rectangular block of the IMU enclosure in the frame."""
+        h, w = frame.shape[:2]
+        roi_mask = np.zeros((h, w), dtype=np.uint8)
+        margin_x, margin_y = int(w * 0.05), int(h * 0.05)
+        roi_mask[margin_y:h - margin_y, margin_x:w - margin_x] = 255
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 75]))
+        mask = cv2.bitwise_and(mask, roi_mask)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates = []
+        max_dist = min(w, h) * 0.35 if require_center else 999999.0
+
+        for c in contours:
+            area = cv2.contourArea(c)
+            if 400 < area < 40000:
+                bx, by, bw, bh = cv2.boundingRect(c)
+                aspect = float(bw) / max(1, bh)
+                if 0.4 < aspect < 2.8:
+                    cx = bx + bw / 2.0
+                    cy = by + bh / 2.0
+                    dist = np.hypot(cx - w / 2.0, cy - h / 2.0)
+                    if not require_center or dist <= max_dist:
+                        candidates.append((dist, (bx, by, bw, bh), area))
+
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[0][1]
+        return None
 
     def _detect_markers(self, gray_frame: np.ndarray):
         """Detect markers handling differences between OpenCV 4.5 and 4.7+."""
@@ -245,9 +356,25 @@ class CameraGroundTruthTracker:
             annotated = cv2.cvtColor(annotated, cv2.COLOR_GRAY2BGR)
 
         gray = cv2.cvtColor(annotated, cv2.COLOR_BGR2GRAY)
+
+        # 0. Check if a new tracking ROI was requested by user click
+        with self._lock:
+            pending_roi = self._pending_roi
+            self._pending_roi = None
+
+        if pending_roi is not None:
+            try:
+                self.object_tracker = cv2.TrackerCSRT_create()
+                self.object_tracker.init(frame, pending_roi)
+                self.object_bbox = pending_roi
+            except Exception as e:
+                logging.debug(f"Failed to initialize CSRT tracker: {e}")
+                self.object_tracker = None
+
         corners, ids, _ = self._detect_markers(gray)
 
         detected = False
+        tracking_mode = "searching"
         pos_cm = [0.0, 0.0, 0.0]
         delta_cm = [0.0, 0.0, 0.0]
 
@@ -276,6 +403,7 @@ class CameraGroundTruthTracker:
 
                     pos_cm = [round(float(pos[0]), 2), round(float(pos[1]), 2), round(float(pos[2]), 2)]
                     detected = True
+                    tracking_mode = "aruco"
 
                     # 1. Draw marker outline
                     cv2.aruco.drawDetectedMarkers(annotated, [target_corner], np.array([[self.target_marker_id]]))
@@ -326,21 +454,149 @@ class CameraGroundTruthTracker:
                     logging.debug(f"Optical pose estimation failed: {e}")
                     detected = False
 
+        # If ArUco not found, use Hardware Analyzer Tracking Box (Balok Hitam IMU)
         if not detected:
-            overlay = annotated.copy()
-            cv2.rectangle(overlay, (8, 8), (320, 48), (20, 20, 20), -1)
-            cv2.addWeighted(overlay, 0.75, annotated, 0.25, 0, annotated)
-            cv2.rectangle(annotated, (8, 8), (320, 48), (60, 60, 200), 1)
-            cv2.putText(
-                annotated,
-                f"Searching for ArUco Marker #{self.target_marker_id}...",
-                (16, 32),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (100, 150, 255),
-                1,
-                cv2.LINE_AA,
-            )
+            if self.object_tracker is not None:
+                try:
+                    success, box = self.object_tracker.update(frame)
+                    if success:
+                        bx, by, bw, bh = [int(v) for v in box]
+                        self.object_bbox = (bx, by, bw, bh)
+                        cx = bx + bw / 2.0
+                        cy = by + bh / 2.0
+                        # Pinhole depth estimate from known physical dimension (4.0 cm)
+                        est_z = (self.camera_matrix[0, 0] * self.marker_size_cm) / max(10, max(bw, bh))
+                        est_x = (cx - self.camera_matrix[0, 2]) * est_z / self.camera_matrix[0, 0]
+                        est_y = (cy - self.camera_matrix[1, 2]) * est_z / self.camera_matrix[1, 1]
+                        pos = np.array([est_x, est_y, est_z], dtype=float)
+
+                        with self._lock:
+                            self._last_pos = np.copy(pos)
+                            if self.tare_origin is None or self._tare_requested:
+                                self.tare_origin = np.copy(pos)
+                                self._tare_requested = False
+                            delta = pos - self.tare_origin
+                            delta_cm = [round(float(delta[0]), 2), round(float(delta[1]), 2), round(float(delta[2]), 2)]
+
+                        pos_cm = [round(float(pos[0]), 2), round(float(pos[1]), 2), round(float(pos[2]), 2)]
+                        detected = True
+                        tracking_mode = "block"
+
+                        draw_analyzer_box(
+                            annotated,
+                            (bx, by, bw, bh),
+                            label="ANALYZER: IMU BALOK HITAM (LOCKED)",
+                            color=(0, 255, 128),
+                            is_locked=True,
+                        )
+
+                        overlay = annotated.copy()
+                        cv2.rectangle(overlay, (8, 8), (340, 85), (20, 20, 20), -1)
+                        cv2.addWeighted(overlay, 0.75, annotated, 0.25, 0, annotated)
+                        cv2.rectangle(annotated, (8, 8), (340, 85), (0, 255, 128), 1)
+
+                        cv2.putText(
+                            annotated,
+                            "OPTICAL TRACKER: IMU BALOK HITAM",
+                            (16, 26),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.42,
+                            (0, 255, 128),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                        cv2.putText(
+                            annotated,
+                            f"POS: X:{pos_cm[0]:+6.1f}  Y:{pos_cm[1]:+6.1f}  Z:{pos_cm[2]:+6.1f} cm",
+                            (16, 48),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.42,
+                            (255, 255, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                        cv2.putText(
+                            annotated,
+                            f"REL: dX:{delta_cm[0]:+5.1f}  dY:{delta_cm[1]:+5.1f}  dZ:{delta_cm[2]:+5.1f} cm",
+                            (16, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45,
+                            (0, 240, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                    else:
+                        self.object_tracker = None
+                except Exception as e:
+                    logging.debug(f"Object tracking error: {e}")
+                    self.object_tracker = None
+
+            if not detected:
+                auto_box = self.auto_detect_black_block(frame)
+                if auto_box is not None:
+                    try:
+                        self.object_tracker = cv2.TrackerCSRT_create()
+                        self.object_tracker.init(frame, auto_box)
+                        self.object_bbox = auto_box
+                        bx, by, bw, bh = auto_box
+                        cx = bx + bw / 2.0
+                        cy = by + bh / 2.0
+                        est_z = (self.camera_matrix[0, 0] * self.marker_size_cm) / max(10, max(bw, bh))
+                        est_x = (cx - self.camera_matrix[0, 2]) * est_z / self.camera_matrix[0, 0]
+                        est_y = (cy - self.camera_matrix[1, 2]) * est_z / self.camera_matrix[1, 1]
+                        pos = np.array([est_x, est_y, est_z], dtype=float)
+
+                        with self._lock:
+                            self._last_pos = np.copy(pos)
+                            if self.tare_origin is None or self._tare_requested:
+                                self.tare_origin = np.copy(pos)
+                                self._tare_requested = False
+                            delta = pos - self.tare_origin
+                            delta_cm = [round(float(delta[0]), 2), round(float(delta[1]), 2), round(float(delta[2]), 2)]
+
+                        pos_cm = [round(float(pos[0]), 2), round(float(pos[1]), 2), round(float(pos[2]), 2)]
+                        detected = True
+                        tracking_mode = "block"
+
+                        draw_analyzer_box(
+                            annotated,
+                            auto_box,
+                            label="ANALYZER: IMU BALOK HITAM (ACQUIRED)",
+                            color=(0, 240, 255),
+                            is_locked=True,
+                        )
+                    except Exception as e:
+                        logging.debug(f"Auto-detect init failed: {e}")
+
+                if not detected:
+                    # Draw Center Analyzer Target Reticle
+                    cw = self.width // 2
+                    ch = self.height // 2
+                    target_w = 150
+                    target_h = 150
+                    center_box = (cw - target_w // 2, ch - target_h // 2, target_w, target_h)
+                    draw_analyzer_box(
+                        annotated,
+                        center_box,
+                        label="ANALYZER TARGET (ARAHKAN BALOK HITAM)",
+                        color=(0, 200, 255),
+                        is_locked=False,
+                    )
+
+                    overlay = annotated.copy()
+                    cv2.rectangle(overlay, (8, 8), (380, 48), (20, 20, 20), -1)
+                    cv2.addWeighted(overlay, 0.75, annotated, 0.25, 0, annotated)
+                    cv2.rectangle(annotated, (8, 8), (380, 48), (60, 160, 255), 1)
+                    cv2.putText(
+                        annotated,
+                        "Arahkan Balok Hitam ke Kotak Tengah / Klik Video",
+                        (16, 32),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.40,
+                        (100, 220, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
 
         # Update FPS
         now = time.time()
@@ -357,12 +613,14 @@ class CameraGroundTruthTracker:
 
         data_dict = {
             "detected": detected,
+            "mode": tracking_mode,
             "pos_cm": pos_cm,
             "delta_cm": delta_cm,
             "fps": round(self._measured_fps, 1),
             "marker_id": self.target_marker_id,
             "timestamp": now,
             "status": "active" if detected else "searching",
+            "bbox": list(self.object_bbox) if (detected and self.object_bbox) else None,
         }
 
         with self._lock:
@@ -432,12 +690,14 @@ class CameraGroundTruthTracker:
                         self.latest_jpeg = enc.tobytes()
                         self.latest_data = {
                             "detected": False,
+                            "mode": "offline",
                             "pos_cm": [0.0, 0.0, 0.0],
                             "delta_cm": [0.0, 0.0, 0.0],
                             "fps": 0.0,
                             "marker_id": self.target_marker_id,
                             "timestamp": time.time(),
                             "status": "offline",
+                            "bbox": None,
                         }
                     time.sleep(0.5)
                     continue

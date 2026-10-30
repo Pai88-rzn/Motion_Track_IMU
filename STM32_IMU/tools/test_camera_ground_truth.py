@@ -13,7 +13,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from camera_ground_truth import generate_aruco_marker_png, CameraGroundTruthTracker
+from camera_ground_truth import generate_aruco_marker_png, CameraGroundTruthTracker, draw_analyzer_box
 
 
 def test_generate_aruco_marker_png():
@@ -242,4 +242,47 @@ def test_pose_estimation_exception_logging(caplog):
                 annotated, data = tracker.process_frame(canvas)
                 assert data["detected"] is False
                 assert any("Optical pose estimation failed" in r.message for r in caplog.records)
+
+
+def test_draw_analyzer_box():
+    """Verify draw_analyzer_box modifies image buffer with bounding box, reticle, and label."""
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    draw_analyzer_box(img, (100, 100, 80, 80), label="TEST IMU BALOK", color=(0, 240, 255), is_locked=True)
+    # Check that pixels inside the region were modified from 0
+    assert np.any(img[100:180, 100:180] > 0)
+
+
+def test_auto_detect_black_block():
+    """Verify auto-detection identifies a synthetic dark block in the frame."""
+    tracker = CameraGroundTruthTracker(video_source=-1)
+    # Bright background with a dark rectangular block near center
+    img = np.ones((480, 640, 3), dtype=np.uint8) * 220
+    cv2.rectangle(img, (270, 190), (370, 290), (10, 10, 10), -1)  # 100x100 dark block
+
+    bbox = tracker.auto_detect_black_block(img, require_center=True)
+    assert bbox is not None
+    bx, by, bw, bh = bbox
+    assert abs((bx + bw / 2) - 320) < 30
+    assert abs((by + bh / 2) - 240) < 30
+
+
+def test_set_tracking_roi_and_reset():
+    """Verify set_tracking_roi locks onto object and reset_tracker clears it."""
+    tracker = CameraGroundTruthTracker(video_source=-1)
+    # Dark block
+    canvas = np.ones((480, 640, 3), dtype=np.uint8) * 200
+    cv2.rectangle(canvas, (200, 150), (280, 230), (15, 15, 15), -1)
+
+    # Set tracking ROI
+    tracker.set_tracking_roi((200, 150, 80, 80))
+    annotated, data = tracker.process_frame(canvas)
+
+    assert data["detected"] is True
+    assert data["mode"] == "block"
+    assert data["bbox"] is not None
+
+    # Reset tracker
+    tracker.reset_tracker()
+    assert tracker.object_tracker is None
+    assert tracker.object_bbox is None
 

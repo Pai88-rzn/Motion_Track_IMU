@@ -126,3 +126,21 @@ def test_javascript_handlers_present(html_soup):
     # Camera-to-world axis mapping
     assert "delta_world" in content, "Missing delta_world camera-to-world axis mapping in script"
     assert "frontal" in content and "overhead" in content, "Missing frontal and overhead mount branches in script"
+
+
+def test_camera_analyzer_tracking_box_elements(html_soup):
+    """Verify hardware black block tracking controls (#btn-kunci-balok, #btn-reset-balok) and click handler."""
+    soup, content = html_soup
+
+    # Toolbar action buttons
+    btn_kunci = soup.find(id="btn-kunci-balok")
+    assert btn_kunci is not None, "Missing #btn-kunci-balok in camera analyzer toolbar"
+    assert "Kunci Balok" in btn_kunci.get_text()
+
+    btn_reset = soup.find(id="btn-reset-balok")
+    assert btn_reset is not None, "Missing #btn-reset-balok in camera analyzer toolbar"
+    assert "Reset Box" in btn_reset.get_text()
+
+    # JS click-to-lock and endpoints
+    assert "/api/set_tracking_roi" in content, "Missing /api/set_tracking_roi call in visualizer script"
+    assert "/api/reset_tracker" in content, "Missing /api/reset_tracker call in visualizer script"

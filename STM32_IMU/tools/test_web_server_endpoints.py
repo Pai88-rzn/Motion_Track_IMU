@@ -176,3 +176,49 @@ def test_graceful_degradation_offline_camera():
     assert isinstance(telemetry["detected"], bool)
     assert len(telemetry["pos_cm"]) == 3
     assert len(telemetry["delta_cm"]) == 3
+
+
+def test_api_set_tracking_roi_and_reset(client):
+    """Verify POST /api/set_tracking_roi and POST /api/reset_tracker endpoints."""
+    # Set ROI (normalized coordinates)
+    roi_payload = {"x": 0.30, "y": 0.25, "width": 0.20, "height": 0.20, "normalized": True}
+    res = client.post("/api/set_tracking_roi", json=roi_payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert "roi" in data
+    assert tracker._pending_roi is not None
+
+    # Reset tracker
+    res_reset = client.post("/api/reset_tracker")
+    assert res_reset.status_code == 200
+    data_reset = res_reset.json()
+    assert data_reset["status"] == "ok"
+    assert tracker.object_tracker is None
+    assert tracker.object_bbox is None
+
+
+def test_websocket_tracking_roi_actions(client):
+    """Verify WebSocket set_tracking_roi and reset_tracker actions."""
+    with client.websocket_connect("/ws") as ws:
+        if latest_imu_data.get("ts", 0.0) > 0:
+            _ = ws.receive_json()
+
+        # Send set_tracking_roi action
+        ws.send_json({
+            "action": "set_tracking_roi",
+            "x": 0.40,
+            "y": 0.40,
+            "width": 0.20,
+            "height": 0.20,
+            "normalized": True
+        })
+        msg = ws.receive_json()
+        assert "camera" in msg
+        assert tracker._pending_roi is not None
+
+        # Send reset_tracker action
+        ws.send_json({"action": "reset_tracker"})
+        msg2 = ws.receive_json()
+        assert "camera" in msg2
+        assert tracker.object_tracker is None

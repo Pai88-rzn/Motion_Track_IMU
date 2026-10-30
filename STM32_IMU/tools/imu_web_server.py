@@ -352,6 +352,58 @@ class StrokeScalesRequest(BaseModel):
     scale_z: float = Field(default=1.0, gt=0.01, le=10.0)
 
 
+class TrackingRoiRequest(BaseModel):
+    x: float = Field(default=0.38, ge=0.0, le=1.0)
+    y: float = Field(default=0.38, ge=0.0, le=1.0)
+    width: float = Field(default=0.24, gt=0.0, le=1.0)
+    height: float = Field(default=0.24, gt=0.0, le=1.0)
+    normalized: bool = True
+
+
+@app.post("/api/set_tracking_roi")
+async def api_set_tracking_roi(payload: TrackingRoiRequest):
+    """Locks optical tracking box to specified region of interest."""
+    w_cam = tracker.width if tracker.width > 0 else 640
+    h_cam = tracker.height if tracker.height > 0 else 480
+    if payload.normalized:
+        bx = int(payload.x * w_cam)
+        by = int(payload.y * h_cam)
+        bw = int(payload.width * w_cam)
+        bh = int(payload.height * h_cam)
+    else:
+        bx = int(payload.x)
+        by = int(payload.y)
+        bw = int(payload.width)
+        bh = int(payload.height)
+
+    bx = max(0, min(w_cam - 10, bx))
+    by = max(0, min(h_cam - 10, by))
+    bw = max(10, min(w_cam - bx, bw))
+    bh = max(10, min(h_cam - by, bh))
+
+    tracker.set_tracking_roi((bx, by, bw, bh))
+    analyzer.tare_position()
+    latest_imu_data["camera"] = tracker.get_latest_data()
+    if active_websockets:
+        await broadcast_imu(json.dumps(latest_imu_data))
+    return {
+        "status": "ok",
+        "message": "Tracking ROI locked",
+        "roi": [bx, by, bw, bh],
+        "normalized": payload.normalized,
+    }
+
+
+@app.post("/api/reset_tracker")
+async def api_reset_tracker():
+    """Resets optical tracking box back to search mode / center target reticle."""
+    tracker.reset_tracker()
+    latest_imu_data["camera"] = tracker.get_latest_data()
+    if active_websockets:
+        await broadcast_imu(json.dumps(latest_imu_data))
+    return {"status": "ok", "message": "Tracker reset to search mode"}
+
+
 @app.post("/api/tare_both")
 async def api_tare_both():
     """Tares both IMU origin and Camera optical ground-truth origin."""
@@ -476,6 +528,36 @@ async def websocket_endpoint(websocket: WebSocket):
                     sz = max(0.01, min(10.0, float(cmd.get("scale_z", 1.0))))
                     analyzer.set_stroke_scales(sx, sy, sz)
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
+                    await broadcast_imu(json.dumps(latest_imu_data))
+                elif action == "set_tracking_roi":
+                    w_cam = tracker.width if tracker.width > 0 else 640
+                    h_cam = tracker.height if tracker.height > 0 else 480
+                    norm = cmd.get("normalized", True)
+                    x = float(cmd.get("x", 0.38))
+                    y = float(cmd.get("y", 0.38))
+                    w_box = float(cmd.get("width", 0.24))
+                    h_box = float(cmd.get("height", 0.24))
+                    if norm:
+                        bx = int(x * w_cam)
+                        by = int(y * h_cam)
+                        bw = int(w_box * w_cam)
+                        bh = int(h_box * h_cam)
+                    else:
+                        bx = int(x)
+                        by = int(y)
+                        bw = int(w_box)
+                        bh = int(h_box)
+                    bx = max(0, min(w_cam - 10, bx))
+                    by = max(0, min(h_cam - 10, by))
+                    bw = max(10, min(w_cam - bx, bw))
+                    bh = max(10, min(h_cam - by, bh))
+                    tracker.set_tracking_roi((bx, by, bw, bh))
+                    analyzer.tare_position()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
+                    await broadcast_imu(json.dumps(latest_imu_data))
+                elif action == "reset_tracker":
+                    tracker.reset_tracker()
                     latest_imu_data["camera"] = tracker.get_latest_data()
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "sim_sample":

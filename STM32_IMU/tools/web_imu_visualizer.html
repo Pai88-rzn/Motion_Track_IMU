@@ -516,11 +516,24 @@
         </div>
       </div>
       <div class="pip-body" id="pip-body">
-        <div class="pip-video-wrapper">
-          <img id="camera-stream" src="/video_feed" alt="Camera Feed" />
+        <div class="pip-video-wrapper" style="position: relative; cursor: crosshair;">
+          <img id="camera-stream" src="/video_feed" alt="Camera Feed" title="Klik pada balok hitam untuk mengunci kotak tracking" />
           <div class="pip-video-overlay">
             <span id="cam-fps-badge">0.0 FPS</span>
           </div>
+        </div>
+
+        <!-- Hardware Balok Hitam Analyzer Toolbar -->
+        <div class="pip-analyzer-toolbar" style="display: flex; gap: 6px; padding: 6px 10px; background: rgba(15, 23, 42, 0.85); border-bottom: 1px solid rgba(255,255,255,0.06); align-items: center;">
+          <button id="btn-kunci-balok" class="pip-btn" title="Kunci kotak analyzer pada balok hitam di area tengah" style="background: rgba(14, 165, 233, 0.2); border: 1px solid rgba(56, 189, 248, 0.5); color: #38bdf8; font-size: 0.68rem; padding: 3px 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-weight: 500;">
+            <span>🎯 Kunci Balok</span>
+          </button>
+          <button id="btn-reset-balok" class="pip-btn" title="Reset kotak tracking kembali ke pencarian" style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.5); color: #f87171; font-size: 0.68rem; padding: 3px 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-weight: 500;">
+            <span>↺ Reset Box</span>
+          </button>
+          <span style="font-size: 0.62rem; color: #94a3b8; margin-left: auto; text-align: right; line-height: 1.2;">
+            💡 Klik balok di video untuk lock
+          </span>
         </div>
 
         <!-- Ground-Truth Comparison HUD -->
@@ -1409,10 +1422,15 @@
         const badge = document.getElementById('optical-status-badge');
         if (badge) {
           if (cam.detected) {
-            badge.textContent = 'OPTICAL LOCK';
-            badge.className = 'badge-optical badge-locked';
+            if (cam.mode === 'block') {
+              badge.textContent = 'ANALYZER LOCK: BALOK';
+              badge.className = 'badge-optical badge-locked';
+            } else {
+              badge.textContent = 'OPTICAL LOCK';
+              badge.className = 'badge-optical badge-locked';
+            }
           } else {
-            badge.textContent = (cam.status === 'offline') ? 'CAM OFFLINE' : 'SEARCHING MARKER';
+            badge.textContent = (cam.status === 'offline') ? 'CAM OFFLINE' : 'ARAHKAN BALOK';
             badge.className = 'badge-optical badge-searching';
           }
         }
@@ -1915,6 +1933,60 @@
     if (markerModal) {
       markerModal.addEventListener('click', (e) => {
         if (e.target === markerModal) closeMarkerModal();
+      });
+    }
+
+    // Click on camera stream to snap and lock analyzer tracking box to clicked balok hitam
+    const camImg = document.getElementById('camera-stream');
+    if (camImg) {
+      camImg.addEventListener('click', (e) => {
+        const rect = camImg.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const clickX = (e.clientX - rect.left) / rect.width;
+        const clickY = (e.clientY - rect.top) / rect.height;
+        const boxW = 0.22;
+        const boxH = 0.22;
+        const normX = Math.max(0.0, Math.min(1.0 - boxW, clickX - boxW / 2));
+        const normY = Math.max(0.0, Math.min(1.0 - boxH, clickY - boxH / 2));
+
+        fetch('/api/set_tracking_roi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            x: normX,
+            y: normY,
+            width: boxW,
+            height: boxH,
+            normalized: true
+          })
+        }).catch(err => console.error('[Camera] ROI lock error:', err));
+      });
+    }
+
+    const btnKunciBalok = document.getElementById('btn-kunci-balok');
+    if (btnKunciBalok) {
+      btnKunciBalok.addEventListener('click', () => {
+        // Lock centered ROI on the black block
+        fetch('/api/set_tracking_roi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            x: 0.38,
+            y: 0.38,
+            width: 0.24,
+            height: 0.24,
+            normalized: true
+          })
+        }).catch(err => console.error('[Camera] Lock balok error:', err));
+      });
+    }
+
+    const btnResetBalok = document.getElementById('btn-reset-balok');
+    if (btnResetBalok) {
+      btnResetBalok.addEventListener('click', () => {
+        fetch('/api/reset_tracker', {
+          method: 'POST'
+        }).catch(err => console.error('[Camera] Reset tracker error:', err));
       });
     }
 
