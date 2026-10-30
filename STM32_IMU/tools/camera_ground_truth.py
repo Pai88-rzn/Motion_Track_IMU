@@ -156,7 +156,7 @@ class CameraGroundTruthTracker:
         If marker is not currently detected, tare is applied on next valid detection.
         """
         with self._lock:
-            if self._last_pos is not None:
+            if self.latest_data.get("detected", False) and self._last_pos is not None:
                 self.tare_origin = np.copy(self._last_pos)
                 self._tare_requested = False
             else:
@@ -246,17 +246,19 @@ class CameraGroundTruthTracker:
                 try:
                     rvec, tvec = self._estimate_pose(target_corner)
                     pos = np.array([tvec[0], tvec[1], tvec[2]], dtype=float)
-                    self._last_pos = np.copy(pos)
 
-                    # Auto-tare on first detection or if tare was requested
-                    if self.tare_origin is None or self._tare_requested:
-                        self.tare_origin = np.copy(pos)
-                        self._tare_requested = False
+                    with self._lock:
+                        self._last_pos = np.copy(pos)
 
-                    delta = pos - self.tare_origin
+                        # Auto-tare on first detection or if tare was requested
+                        if self.tare_origin is None or self._tare_requested:
+                            self.tare_origin = np.copy(pos)
+                            self._tare_requested = False
+
+                        delta = pos - self.tare_origin
+                        delta_cm = [round(float(delta[0]), 2), round(float(delta[1]), 2), round(float(delta[2]), 2)]
 
                     pos_cm = [round(float(pos[0]), 2), round(float(pos[1]), 2), round(float(pos[2]), 2)]
-                    delta_cm = [round(float(delta[0]), 2), round(float(delta[1]), 2), round(float(delta[2]), 2)]
                     detected = True
 
                     # 1. Draw marker outline
