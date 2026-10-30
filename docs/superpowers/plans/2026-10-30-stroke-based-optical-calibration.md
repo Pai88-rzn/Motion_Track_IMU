@@ -143,23 +143,23 @@ Expected: PASS (All tests pass).
   - `POST /api/set_stroke_scales`: Updates $(K_x, K_y, K_z)$ live.
   - WebSocket `/ws`: Broadcasts `camera` telemetry object alongside `imu` object.
 
-- [ ] **Step 1: Write integration test for web server endpoints**
+- [x] **Step 1: Write integration test for web server endpoints**
 
 Create `STM32_IMU/tools/test_web_server_endpoints.py` using `fastapi.testclient.TestClient` to verify `/aruco_marker.png` returns status 200 and image/png, and `/api/tare_both` returns status 200.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python3 -m pytest "/home/rifai/Imu_MOTION TRACKER/STM32_IMU/tools/test_web_server_endpoints.py"`
 Expected: FAIL (endpoints 404).
 
-- [ ] **Step 3: Implement endpoints and background camera thread in `imu_web_server.py`**
+- [x] **Step 3: Implement endpoints and background camera thread in `imu_web_server.py`**
 
 - Initialize `CameraGroundTruthTracker(video_source=0)` in background daemon.
 - Implement `/video_feed` streaming generator yielding `b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n'`.
 - Implement `/aruco_marker.png`, `/api/tare_both`, `/api/set_stroke_scales`.
 - Inject `camera_data` into WebSocket broadcast payload.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest "/home/rifai/Imu_MOTION TRACKER/STM32_IMU/tools/test_web_server_endpoints.py"`
 Expected: PASS.
@@ -180,7 +180,7 @@ Expected: PASS.
   - "Show ArUco Marker" modal with printable/scannable QR/ArUco ID 0.
   - "Tare Both (Zero Origin)" button.
 
-- [ ] **Step 1: Add PiP Camera View Container and Comparison HUD to HTML**
+- [x] **Step 1: Add PiP Camera View Container and Comparison HUD to HTML**
 
 Insert floating card `#camera-pip-panel` containing:
 - `<img id="camera-stream" src="/video_feed" />`
@@ -188,17 +188,17 @@ Insert floating card `#camera-pip-panel` containing:
 - Error table comparing IMU cm vs Cam cm.
 - Toggle button `#btn-toggle-cam` in header bar.
 
-- [ ] **Step 2: Add ArUco Marker Modal to HTML**
+- [x] **Step 2: Add ArUco Marker Modal to HTML**
 
 Insert `#marker-modal` with high-resolution image of `/aruco_marker.png` and dimensions instruction (40 mm x 40 mm).
 
-- [ ] **Step 3: Update JavaScript WebSocket handler and controls**
+- [x] **Step 3: Update JavaScript WebSocket handler and controls**
 
 - Handle `data.camera`: update HUD elements (`#cam-pos-x`, `#cam-pos-y`, `#cam-pos-z`, `#cam-delta-x`, etc.).
 - Bind button `#btn-tare-both` to call `/api/tare_both` and reset local Three.js `tarePos`.
 - Bind keyboard shortcut 'C' to toggle camera panel visibility.
 
-- [ ] **Step 4: Verify in headless/syntax check and test browser rendering**
+- [x] **Step 4: Verify in headless/syntax check and test browser rendering**
 
 Run syntax check and verify HTML DOM elements with Python test.
 
@@ -210,7 +210,7 @@ Run syntax check and verify HTML DOM elements with Python test.
 - Execute: `STM32_IMU/tools/imu_web_server.py`
 - Test: Verify live stream on `http://localhost:8080` with `/dev/ttyUSB0` and `/dev/video0`.
 
-- [ ] **Step 1: Restart `imu_web_server.py` with camera and IMU streaming**
-- [ ] **Step 2: Query `/video_feed` and verify live MJPEG header and frame delivery**
-- [ ] **Step 3: Query WebSocket stream and verify live `imu` and `camera` telemetry packets**
-- [ ] **Step 4: Perform live 30 cm vertical lift test, observe camera ground truth vs IMU, verify synchronized 1:1 motion**
+- [x] **Step 1: Restart `imu_web_server.py` with camera and IMU streaming**
+- [x] **Step 2: Query `/video_feed` and verify live MJPEG header and frame delivery**
+- [x] **Step 3: Query WebSocket stream and verify live `imu` and `camera` telemetry packets**
+- [x] **Step 4: Perform live 30 cm vertical lift test, observe camera ground truth vs IMU, verify synchronized 1:1 motion**
