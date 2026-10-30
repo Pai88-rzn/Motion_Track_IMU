@@ -46,9 +46,6 @@ analyzer = SurgicalMotionAnalyzer(fs_hz=100.0, forearm_length_cm=26.0)
 tracker = CameraGroundTruthTracker(video_source=0, marker_size_cm=4.0)
 camera_tracker = tracker  # Interop alias
 
-# Launch optical tracker daemon
-tracker.start()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
