@@ -1,0 +1,3 @@
+/home/rifai/Imu_MOTION TRACKER/STM32_IMU/build/CMakeFiles/STM32_IMU.elf.dir
+/home/rifai/Imu_MOTION TRACKER/STM32_IMU/build/CMakeFiles/edit_cache.dir
+/home/rifai/Imu_MOTION TRACKER/STM32_IMU/build/CMakeFiles/rebuild_cache.dir

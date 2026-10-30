@@ -1,0 +1,1520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Surgical Wrist IMU Hand Motion & Repetition Tracker</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", monospace; }
+    body { background: #070b12; color: #e2e8f0; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+    header {
+      background: #0f1623; padding: 10px 20px; border-bottom: 1px solid #1e293b;
+      display: flex; justify-content: space-between; align-items: center; z-index: 10; flex-wrap: wrap; gap: 10px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand h1 { font-size: 1.05rem; font-weight: 700; color: #38bdf8; letter-spacing: 0.4px; }
+    .brand .badge { background: #0284c7; color: #e0f2fe; padding: 3px 8px; border-radius: 4px; font-size: 0.70rem; font-weight: 700; }
+    .brand .badge-med { background: #0d9488; color: #ccfbf1; padding: 3px 8px; border-radius: 4px; font-size: 0.70rem; font-weight: 700; }
+    .brand .badge-hand { background: #6366f1; color: #e0e7ff; padding: 3px 8px; border-radius: 4px; font-size: 0.70rem; font-weight: 700; }
+
+    .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button, select {
+      padding: 7px 12px; border-radius: 6px; border: 1px solid #334155; font-weight: 600; cursor: pointer;
+      font-size: 0.78rem; transition: all 0.2s; display: flex; align-items: center; gap: 6px; background: #1e293b; color: #e2e8f0;
+    }
+    button:hover, select:hover { background: #334155; }
+    
+    /* Start / End Test Buttons */
+    .btn-start { background: #15803d; border-color: #22c55e; color: #ffffff; font-weight: 700; }
+    .btn-start:hover { background: #16a34a; box-shadow: 0 0 12px rgba(34, 197, 94, 0.45); }
+    .btn-end { background: #b91c1c; border-color: #ef4444; color: #ffffff; font-weight: 700; }
+    .btn-end:hover { background: #dc2626; box-shadow: 0 0 12px rgba(239, 68, 68, 0.45); }
+    
+    .session-timer-badge {
+      display: flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 6px;
+      font-size: 0.75rem; font-weight: 700; background: #0b1322; color: #94a3b8; border: 1px solid #1e293b;
+      font-family: monospace;
+    }
+    .timer-recording {
+      background: rgba(220, 38, 38, 0.15); color: #f87171; border-color: #ef4444;
+      animation: pulse-red 1.2s infinite alternate;
+    }
+    @keyframes pulse-red {
+      from { box-shadow: 0 0 2px rgba(239, 68, 68, 0.3); }
+      to { box-shadow: 0 0 10px rgba(239, 68, 68, 0.65); }
+    }
+
+    .btn-tare { background: #2563eb; border-color: #3b82f6; color: #ffffff; }
+    .btn-tare:hover { background: #1d4ed8; }
+    .btn-reset { background: #475569; border-color: #64748b; color: #f1f5f9; }
+    .btn-reset:hover { background: #64748b; }
+    .btn-export { background: #0f766e; border-color: #14b8a6; color: #ccfbf1; text-decoration: none; padding: 7px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 600; }
+    .btn-export:hover { background: #115e59; }
+    .btn-active { background: #16a34a !important; border-color: #22c55e !important; color: white !important; }
+
+    #main-container { flex: 1; position: relative; display: flex; overflow: hidden; }
+    #canvas-container { flex: 1; height: 100%; }
+
+    .side-panel {
+      position: absolute; top: 14px; max-height: calc(100vh - 84px); overflow-y: auto;
+      background: rgba(15, 22, 35, 0.94); backdrop-filter: blur(14px);
+      border: 1px solid #1e293b; border-radius: 10px; padding: 14px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.65); pointer-events: auto;
+    }
+    #telemetry-panel { left: 14px; width: 310px; }
+    #analytics-panel { right: 14px; width: 390px; }
+
+    .panel-title {
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.9px; color: #94a3b8;
+      margin-bottom: 8px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #1e293b; padding-bottom: 4px;
+    }
+    .telemetry-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.79rem; }
+    .telemetry-val { font-weight: 700; color: #38bdf8; font-family: monospace; }
+
+    .grid-values { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: #090d16; padding: 8px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #1e293b; }
+    .val-cell { text-align: center; }
+    .val-cell .lbl { font-size: 0.62rem; color: #64748b; font-weight: 700; }
+    .val-cell .num { font-size: 0.98rem; font-weight: 800; color: #38bdf8; margin-top: 2px; font-family: monospace; }
+    .roll-col { color: #f43f5e !important; }
+    .pitch-col { color: #10b981 !important; }
+    .yaw-col { color: #38bdf8 !important; }
+
+    .rep-hero {
+      display: grid; grid-template-columns: 1.1fr 1.4fr; gap: 10px; background: linear-gradient(135deg, #0c192c, #090d16);
+      border: 1px solid #0284c7; border-radius: 9px; padding: 10px 12px; margin-bottom: 10px; align-items: center;
+    }
+    .rep-count-box { text-align: center; border-right: 1px solid #1e293b; padding-right: 8px; }
+    .rep-count-box .big-num { font-size: 2.2rem; font-weight: 900; color: #22c55e; line-height: 1; font-family: monospace; transition: transform 0.15s; }
+    .rep-count-box .sub { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; margin-top: 4px; font-weight: 700; }
+
+    .pattern-info { display: flex; flex-direction: column; gap: 4px; }
+    .state-pill {
+      display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.68rem; font-weight: 800;
+      background: #1e293b; color: #cbd5e1; width: fit-content;
+    }
+    .state-rep { background: #065f46; color: #6ee7b7; border: 1px solid #10b981; }
+    .state-idle { background: #1e293b; color: #94a3b8; }
+    .pattern-name { font-size: 0.82rem; font-weight: 700; color: #f8fafc; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; margin-bottom: 10px; }
+    .kpi-card { background: #090d16; border: 1px solid #1e293b; border-radius: 7px; padding: 7px 9px; }
+    .kpi-card .k-lbl { font-size: 0.63rem; color: #64748b; text-transform: uppercase; font-weight: 700; }
+    .kpi-card .k-val { font-size: 0.98rem; font-weight: 800; color: #e2e8f0; margin-top: 2px; font-family: monospace; }
+    .kpi-card .k-sub { font-size: 0.63rem; color: #38bdf8; }
+
+    .bar-bg { width: 100%; height: 5px; background: #1e293b; border-radius: 3px; overflow: hidden; margin-top: 3px; }
+    .bar-fill { height: 100%; background: #10b981; width: 0%; transition: width 0.2s; }
+
+    /* Movement Pattern Breakdown */
+    .pattern-box { background: #090d16; border: 1px solid #1e293b; border-radius: 7px; padding: 9px; margin-bottom: 10px; }
+    .pat-row { margin-bottom: 6px; }
+    .pat-row:last-child { margin-bottom: 0; }
+    .pat-header { display: flex; justify-content: space-between; font-size: 0.74rem; font-weight: 600; margin-bottom: 3px; }
+    .pat-name { color: #cbd5e1; display: flex; align-items: center; gap: 5px; }
+    .pat-badge-cnt { font-family: monospace; font-weight: 800; color: #38bdf8; }
+    .pat-bar-bg { width: 100%; height: 5px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .pat-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+    .bar-suture { background: #0284c7; }
+    .bar-axial { background: #a855f7; }
+    .bar-reach { background: #f59e0b; }
+    .bar-micro { background: #10b981; }
+
+    /* Recent Repetitions Table */
+    .rep-table-wrap { max-height: 120px; overflow-y: auto; background: #090d16; border: 1px solid #1e293b; border-radius: 7px; margin-bottom: 10px; }
+    table.rep-table { width: 100%; border-collapse: collapse; font-size: 0.70rem; text-align: left; }
+    table.rep-table th { background: #0f172a; padding: 5px 6px; color: #94a3b8; font-weight: 700; position: sticky; top: 0; }
+    table.rep-table td { padding: 4px 6px; border-top: 1px solid #1e293b; font-family: monospace; }
+    table.rep-table tr:hover { background: rgba(56, 189, 248, 0.08); }
+
+    canvas.scope { width: 100%; height: 68px; background: #060911; border: 1px solid #1e293b; border-radius: 6px; display: block; margin-bottom: 8px; }
+
+    #connection-status { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .dot-connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .dot-connecting { background: #f59e0b; animation: pulse 1s infinite alternate; }
+    .dot-sim { background: #a855f7; box-shadow: 0 0 8px #a855f7; }
+
+    @keyframes pulse { from { opacity: 0.4; } to { opacity: 1.0; } }
+
+    #tare-badge { display: none; background: #eab308; color: #422006; font-size: 0.65rem; font-weight: 800; padding: 1px 5px; border-radius: 3px; }
+    #zupt-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 700; background: #1e293b; color: #94a3b8; }
+
+    #controls-hint {
+      position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(15, 22, 35, 0.88); border: 1px solid #1e293b; border-radius: 6px;
+      padding: 6px 16px; font-size: 0.74rem; color: #94a3b8; pointer-events: none;
+      display: flex; align-items: center; gap: 10px;
+    }
+
+    /* Modal Summary Styling */
+    #modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(3, 7, 18, 0.75);
+      backdrop-filter: blur(8px); z-index: 100; justify-content: center; align-items: center;
+    }
+    .modal-card {
+      background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; width: 640px; max-width: 92vw;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.85); padding: 22px; color: #e2e8f0; max-height: 88vh; overflow-y: auto;
+    }
+    .modal-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; border-bottom: 1px solid #1e293b; padding-bottom: 12px; }
+    .modal-head h2 { font-size: 1.25rem; font-weight: 800; color: #38bdf8; }
+    .modal-head p { font-size: 0.76rem; color: #94a3b8; margin-top: 3px; }
+    .modal-close-btn { background: none; border: none; font-size: 1.2rem; color: #94a3b8; cursor: pointer; padding: 4px; }
+    .modal-close-btn:hover { color: #ffffff; }
+
+    .modal-grid-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+    .modal-stat-box { background: #090d16; border: 1px solid #1e293b; border-radius: 8px; padding: 10px; text-align: center; }
+    .modal-stat-box .lbl { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; }
+    .modal-stat-box .val { font-size: 1.35rem; font-weight: 900; color: #22c55e; margin-top: 3px; font-family: monospace; }
+    .modal-stat-box .sub { font-size: 0.68rem; color: #38bdf8; margin-top: 2px; }
+
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; border-top: 1px solid #1e293b; padding-top: 14px; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Surgical Wrist IMU Motion & Repetition Tracker</h1>
+      <span class="badge">BNO055 9-DOF</span>
+      <span class="badge-med">Unsupervised Pattern DSP</span>
+      <span class="badge-hand">Doctor's Hand View</span>
+    </div>
+    <div class="actions">
+      <div id="connection-status">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Connecting...</span>
+      </div>
+
+      <!-- Start and End Test Buttons -->
+      <button class="btn-start" id="btn-start" title="Mulai Sesi Pengujian Gerakan">▶ Start Test</button>
+      <button class="btn-end" id="btn-end" style="display:none;" title="Selesai & Kunci Hasil Tes">⏹ End Test</button>
+      <div class="session-timer-badge" id="session-timer-badge">⏱ Siap Mulai Tes</div>
+
+      <button class="btn-tare" id="btn-tare">Tare Heading<span id="tare-badge">TARED</span></button>
+      <button class="btn-tare" id="btn-tare-pos" title="Tetapkan posisi saat ini sebagai Pusat Titik Operasi (0,0,0) cm" style="background:#0284c7; border-color:#38bdf8;">🎯 Set Titik Operasi<span id="pos-tare-badge" style="display:none; background:#10b981; color:#022c22; font-size:0.65rem; padding:1px 5px; border-radius:3px; margin-left:4px;">ZEROED</span></button>
+      <button id="btn-reset-tare">Reset Tare</button>
+      <select id="pos-scale" title="Pilih Skala Sensitivitas Translasi Meja Bedah">
+        <option value="0.06" selected>Skala: Meja Bedah (1x Realistis)</option>
+        <option value="0.03">Skala: Sayatan Mikro (0.5x Presisi)</option>
+        <option value="0.10">Skala: Area Luas (1.7x Jangkauan)</option>
+      </select>
+      <a class="btn-export" href="/api/export_csv" target="_blank">⬇ Export CSV</a>
+      <select id="glove-color" title="Pilih Warna Sarung Tangan Dokter">
+        <option value="blue">Glove: Nitrile Blue</option>
+        <option value="white">Glove: Sterile Latex</option>
+        <option value="teal">Glove: Surgical Mint</option>
+      </select>
+      <select id="sim-profile" style="display:none;" title="Choose Surgical Motion Profile for Simulation">
+        <option value="suturing">Demo: Suturing Needle Arc (2.0s)</option>
+        <option value="knot">Demo: Fast Knot Tying (0.9s)</option>
+        <option value="dissection">Demo: Linear Dissection Reach (1.5s)</option>
+        <option value="fatigue">Demo: Fatigued Suturing + 10Hz Tremor</option>
+      </select>
+      <button id="btn-sim" title="Virtual Demo when Hardware is Unplugged">Virtual Demo</button>
+    </div>
+  </header>
+
+  <div id="main-container">
+    <div id="canvas-container"></div>
+
+    <!-- LEFT PANEL: 9-DOF Wrist Sensor & Bounded 3D Hand Position -->
+    <div class="side-panel" id="telemetry-panel">
+      <div class="panel-title">
+        <span>Wrist Orientation (Pronation / Flexion)</span>
+        <span id="rate-badge" style="color: #22c55e; font-family: monospace;">-- Hz</span>
+      </div>
+      <div class="grid-values">
+        <div class="val-cell">
+          <div class="lbl">ROLL (PRON)</div>
+          <div class="num roll-col" id="val-roll">0.0°</div>
+        </div>
+        <div class="val-cell">
+          <div class="lbl">PITCH (FLEX)</div>
+          <div class="num pitch-col" id="val-pitch">0.0°</div>
+        </div>
+        <div class="val-cell">
+          <div class="lbl">YAW (DEV)</div>
+          <div class="num yaw-col" id="val-yaw">0.0°</div>
+        </div>
+      </div>
+
+      <div class="panel-title">
+        <span>3D Hand Trajectory (Bounded / ZUPT)</span>
+        <span id="zupt-badge">ZUPT CLAMPED</span>
+      </div>
+      <div class="grid-values">
+        <div class="val-cell">
+          <div class="lbl">ΔX (CM)</div>
+          <div class="num" id="val-px">0.0</div>
+        </div>
+        <div class="val-cell">
+          <div class="lbl">ΔY (CM)</div>
+          <div class="num" id="val-py">0.0</div>
+        </div>
+        <div class="val-cell">
+          <div class="lbl">ΔZ (CM)</div>
+          <div class="num" id="val-pz">0.0</div>
+        </div>
+      </div>
+
+      <div class="telemetry-row">
+        <span>Jarak ke Titik Sayatan</span>
+        <span class="telemetry-val" id="val-dist-site" style="color: #38bdf8;">0.0 cm</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Zona Lapangan Bedah</span>
+        <span class="telemetry-val" id="val-zone" style="color: #22c55e;">Incision Center</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Hand Speed (cm/s)</span>
+        <span class="telemetry-val" id="val-speed">0.0 cm/s</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Angular Rate (°/s)</span>
+        <span class="telemetry-val" id="val-gyro">[0.0, 0.0, 0.0]</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Linear Accel (m/s²)</span>
+        <span class="telemetry-val" id="val-accel">[0.00, 0.00, 0.00]</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Quaternion (w,x,y,z)</span>
+        <span class="telemetry-val" id="val-quat">[1.00, 0.00, 0.00, 0.00]</span>
+      </div>
+
+      <div class="panel-title" style="margin-top: 10px;">Session Timing & Activity</div>
+      <div class="telemetry-row">
+        <span>Session Duration</span>
+        <span class="telemetry-val" id="val-sess-time" style="color: #38bdf8;">0.0 s</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Active Surgical Time</span>
+        <span class="telemetry-val" id="val-active-time" style="color: #22c55e;">0.0 s</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Static Hold / Idle Time</span>
+        <span class="telemetry-val" id="val-idle-time" style="color: #94a3b8;">0.0 s</span>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL: Unsupervised Pattern Discovery & Repetition Analytics -->
+    <div class="side-panel" id="analytics-panel">
+      <div class="panel-title">
+        <span>Unsupervised Repetition Analytics</span>
+        <span id="conf-badge" style="color: #38bdf8;">Periodicity: 0%</span>
+      </div>
+
+      <div class="rep-hero">
+        <div class="rep-count-box">
+          <div class="big-num" id="val-reps">0</div>
+          <div class="sub">Total Repetitions</div>
+        </div>
+        <div class="pattern-info">
+          <span class="state-pill state-idle" id="val-state">IDLE / HOLD</span>
+          <div class="pattern-name" id="val-pattern">Waiting for Pattern...</div>
+          <div style="font-size: 0.74rem; color: #94a3b8;">
+            Auto Cycle Period: <strong style="color: #38bdf8;" id="val-period">-- s</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Movement Pattern Breakdown & Frequency -->
+      <div class="panel-title">
+        <span>Klasifikasi Jenis Gerakan & Frekuensi</span>
+        <span style="color:#64748b; font-size:0.65rem;">Analisa Pola</span>
+      </div>
+      <div class="pattern-box" id="pattern-breakdown-card">
+        <div class="pat-row">
+          <div class="pat-header">
+            <span class="pat-name">🔄 Suturing / Rotational Arc</span>
+            <span class="pat-badge-cnt" id="cnt-suture">0x (0%)</span>
+          </div>
+          <div class="pat-bar-bg"><div class="pat-bar-fill bar-suture" id="bar-suture" style="width: 0%;"></div></div>
+        </div>
+        <div class="pat-row">
+          <div class="pat-header">
+            <span class="pat-name">⚡ Instrument / Axial Action</span>
+            <span class="pat-badge-cnt" id="cnt-axial">0x (0%)</span>
+          </div>
+          <div class="pat-bar-bg"><div class="pat-bar-fill bar-axial" id="bar-axial" style="width: 0%;"></div></div>
+        </div>
+        <div class="pat-row">
+          <div class="pat-header">
+            <span class="pat-name">📏 Dissection / Linear Reach</span>
+            <span class="pat-badge-cnt" id="cnt-reach">0x (0%)</span>
+          </div>
+          <div class="pat-bar-bg"><div class="pat-bar-fill bar-reach" id="bar-reach" style="width: 0%;"></div></div>
+        </div>
+        <div class="pat-row">
+          <div class="pat-header">
+            <span class="pat-name">🎯 Micro-Manipulation</span>
+            <span class="pat-badge-cnt" id="cnt-micro">0x (0%)</span>
+          </div>
+          <div class="pat-bar-bg"><div class="pat-bar-fill bar-micro" id="bar-micro" style="width: 0%;"></div></div>
+        </div>
+      </div>
+
+      <!-- Biomechanical KPIs -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="k-lbl">Surgical Cadence</div>
+          <div class="k-val" id="val-cadence">0.0 <span style="font-size:0.7rem;color:#64748b;">reps/m</span></div>
+          <div class="k-sub" id="val-consistency">Consistency: --%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="k-lbl">3D Path Economy</div>
+          <div class="k-val" id="val-path">0.0 <span style="font-size:0.7rem;color:#64748b;">cm/rep</span></div>
+          <div class="k-sub" id="val-angle">Rot Excursion: 0.0°</div>
+        </div>
+        <div class="kpi-card">
+          <div class="k-lbl">Smoothness (LDLJ)</div>
+          <div class="k-val" id="val-smooth">0.0%</div>
+          <div class="bar-bg"><div class="bar-fill" id="bar-smooth"></div></div>
+        </div>
+        <div class="kpi-card">
+          <div class="k-lbl">8–12 Hz Tremor RMS</div>
+          <div class="k-val" id="val-tremor">0.000 <span style="font-size:0.68rem;color:#64748b;">m/s²</span></div>
+          <div class="k-sub" id="val-fatigue-lbl" style="color: #22c55e;">Steady Hand</div>
+        </div>
+      </div>
+
+      <!-- Recent Repetitions Log Table -->
+      <div class="panel-title">
+        <span>Riwayat Siklus Repetisi Terakhir</span>
+        <span style="color:#64748b; font-size:0.65rem;">Log Siklus</span>
+      </div>
+      <div class="rep-table-wrap">
+        <table class="rep-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Jenis Gerakan</th>
+              <th>Durasi</th>
+              <th>Lintasan</th>
+              <th>Sudut</th>
+              <th>Smooth</th>
+            </tr>
+          </thead>
+          <tbody id="rep-table-body">
+            <tr>
+              <td colspan="6" style="text-align: center; color: #64748b; padding: 10px;">Belum ada repetisi tercatat</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel-title">Dominant PCA Motion Wave & Cycle Peaks</div>
+      <canvas class="scope" id="wave-canvas" width="360" height="68"></canvas>
+
+      <div class="panel-title">Multi-Lag Autocorrelation R(τ) [0.4s – 4.5s]</div>
+      <canvas class="scope" id="autocorr-canvas" width="360" height="58"></canvas>
+    </div>
+
+    <div id="controls-hint">
+      <span>🩺 <strong>Tangan Dokter</strong> + Tag IMU Bosch BNO055 + Needle Driver</span>
+      <span>|</span>
+      <span>Rotasi: Drag Mouse</span>
+      <span>|</span>
+      <span>Zoom: Scroll</span>
+    </div>
+  </div>
+
+  <!-- MODAL: Test Session Summary Report -->
+  <div id="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2>📋 Laporan Hasil Pengujian Gerakan Bedah</h2>
+          <p id="modal-subtitle">Ringkasan Analisis Biomekanika & Klasifikasi Pola Gerakan</p>
+        </div>
+        <button class="modal-close-btn" id="modal-btn-close">✕</button>
+      </div>
+
+      <div class="modal-grid-stats">
+        <div class="modal-stat-box">
+          <div class="lbl">Total Repetisi</div>
+          <div class="val" id="modal-val-reps">0</div>
+          <div class="sub" id="modal-val-cadence">0.0 reps/m</div>
+        </div>
+        <div class="modal-stat-box">
+          <div class="lbl">Durasi Sesi</div>
+          <div class="val" id="modal-val-duration" style="color:#38bdf8;">0.0 s</div>
+          <div class="sub" id="modal-val-active-ratio">Aktif: 0%</div>
+        </div>
+        <div class="modal-stat-box">
+          <div class="lbl">Tingkat Kehalusan</div>
+          <div class="val" id="modal-val-smooth" style="color:#a855f7;">0.0%</div>
+          <div class="sub" id="modal-val-tremor">Tremor: 0.000 m/s²</div>
+        </div>
+      </div>
+
+      <div class="panel-title" style="margin-bottom: 8px;">
+        <span>Distribusi & Frekuensi Jenis Gerakan</span>
+      </div>
+      <div class="pattern-box" id="modal-pattern-box" style="margin-bottom: 14px;">
+        <!-- Filled dynamically -->
+      </div>
+
+      <div class="panel-title" style="margin-bottom: 8px;">
+        <span>Rata-Rata Biomekanika per Repetisi</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Rata-Rata Panjang Lintasan 3D:</span>
+        <span class="telemetry-val" id="modal-val-path">0.0 cm / rep</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Rata-Rata Ekskursi Sudut Rotasi:</span>
+        <span class="telemetry-val" id="modal-val-angle">0.0° / rep</span>
+      </div>
+      <div class="telemetry-row">
+        <span>Konsistensi Ritme Antar-Siklus:</span>
+        <span class="telemetry-val" id="modal-val-consistency">0%</span>
+      </div>
+
+      <div class="modal-actions">
+        <a class="btn-export" href="/api/export_csv" target="_blank">⬇ Unduh Data CSV Sesi Ini</a>
+        <button class="btn-start" id="modal-btn-new-test">▶ Mulai Tes Baru</button>
+        <button id="modal-btn-dismiss">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* =============================================================
+       1. Three.js 3D Scene Setup & Operating Room Lighting
+       ============================================================= */
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x060a12);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / (window.innerHeight - 52), 0.1, 1000);
+    camera.position.set(3.6, 2.6, 4.4);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    renderer.setSize(window.innerWidth, window.innerHeight - 52);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    container.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0.6, 0.0, 0.0);
+
+    // Surgical Theater Ambient & Directed Illumination
+    scene.add(new THREE.AmbientLight(0xdbeafe, 0.65));
+
+    const spotLight = new THREE.SpotLight(0xffffff, 1.4);
+    spotLight.position.set(3.5, 8.5, 4.5);
+    spotLight.angle = 0.55;
+    spotLight.penumbra = 0.4;
+    spotLight.castShadow = true;
+    scene.add(spotLight);
+
+    const surgicalLamp = new THREE.DirectionalLight(0xf8fafc, 0.85);
+    surgicalLamp.position.set(-2, 6, 3);
+    scene.add(surgicalLamp);
+
+    const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.55);
+    rimLight.position.set(-4, -2, -4);
+    scene.add(rimLight);
+
+    // --- 3D Operating Table Structure & Sterile Incision Field ---
+    const tableGroup = new THREE.Group();
+
+    // 1. Operating Table Mattress (Padded Medical Vinyl)
+    const mattressGeo = new THREE.BoxGeometry(9.0, 0.26, 3.8);
+    const mattressMat = new THREE.MeshStandardMaterial({
+      color: 0x0a192f,
+      roughness: 0.65,
+      metalness: 0.15
+    });
+    const mattressMesh = new THREE.Mesh(mattressGeo, mattressMat);
+    mattressMesh.position.set(0.6, -1.58, 0.0);
+    mattressMesh.receiveShadow = true;
+    tableGroup.add(mattressMesh);
+
+    // 2. Sterile Surgical Green Drape (Kain Steril Lapangan Operasi)
+    const drapeGeo = new THREE.BoxGeometry(6.2, 0.04, 3.0);
+    const drapeMat = new THREE.MeshStandardMaterial({
+      color: 0x064e3b, // Sterile Surgical Emerald Drape
+      roughness: 0.85,
+      metalness: 0.02
+    });
+    const drapeMesh = new THREE.Mesh(drapeGeo, drapeMat);
+    drapeMesh.position.set(0.8, -1.43, 0.0);
+    drapeMesh.receiveShadow = true;
+    tableGroup.add(drapeMesh);
+
+    // Stainless steel table pedestal column & base
+    const pedestalGeo = new THREE.CylinderGeometry(0.35, 0.45, 1.2, 24);
+    const metalTableMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.85, roughness: 0.25 });
+    const pedestalMesh = new THREE.Mesh(pedestalGeo, metalTableMat);
+    pedestalMesh.position.set(0.6, -2.25, 0.0);
+    tableGroup.add(pedestalMesh);
+
+    const basePlateGeo = new THREE.BoxGeometry(2.6, 0.12, 1.8);
+    const basePlateMesh = new THREE.Mesh(basePlateGeo, metalTableMat);
+    basePlateMesh.position.set(0.6, -2.85, 0.0);
+    tableGroup.add(basePlateMesh);
+
+    // Subtle Surgical Precision Grid on Drape
+    const tableGrid = new THREE.GridHelper(6.0, 30, 0x10b981, 0x065f46);
+    tableGrid.position.set(0.8, -1.41, 0.0);
+    tableGroup.add(tableGrid);
+
+    // 3. Incision Site Marker (Pusat Titik Lokasi Operasi: X=1.85, Z=0.0)
+    const incisionCenter = new THREE.Vector3(1.85, -1.40, 0.0);
+    const incisionGroup = new THREE.Group();
+    incisionGroup.position.copy(incisionCenter);
+
+    // Fenestrated incision oval cutout ring
+    const incisionRingGeo = new THREE.RingGeometry(0.18, 0.24, 32);
+    incisionRingGeo.rotateX(-Math.PI / 2);
+    const incisionRingMat = new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide });
+    const incisionRingMesh = new THREE.Mesh(incisionRingGeo, incisionRingMat);
+    incisionGroup.add(incisionRingMesh);
+
+    // Inner incision void simulation
+    const voidGeo = new THREE.CircleGeometry(0.18, 32);
+    voidGeo.rotateX(-Math.PI / 2);
+    const voidMat = new THREE.MeshBasicMaterial({ color: 0x450a0a, side: THREE.DoubleSide });
+    const voidMesh = new THREE.Mesh(voidGeo, voidMat);
+    incisionGroup.add(voidMesh);
+
+    // Concentric Calibrated Range Rings around Incision
+    function createRangeRing(radius, color, dashed) {
+      const segs = 64;
+      const pts = [];
+      for (let i = 0; i <= segs; i++) {
+        const th = (i / segs) * Math.PI * 2;
+        pts.push(new THREE.Vector3(Math.cos(th) * radius, 0.002, Math.sin(th) * radius));
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = dashed 
+        ? new THREE.LineDashedMaterial({ color: color, dashSize: 0.08, gapSize: 0.05, linewidth: 1.5 })
+        : new THREE.LineBasicMaterial({ color: color, linewidth: 1.8 });
+      const line = new THREE.Line(geo, mat);
+      if (dashed) line.computeLineDistances();
+      return line;
+    }
+
+    // 10 cm Ring (Incision Margin: 0.20 units)
+    incisionGroup.add(createRangeRing(0.20, 0x22c55e, false));
+    // 25 cm Ring (Sterile Workfield: 0.50 units)
+    incisionGroup.add(createRangeRing(0.50, 0x38bdf8, true));
+    // 40 cm Ring (Table Limit: 0.80 units)
+    incisionGroup.add(createRangeRing(0.80, 0x94a3b8, true));
+
+    // Surgical Site Center Crosshair
+    const crossGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.08, 0.003, 0), new THREE.Vector3(0.08, 0.003, 0),
+      new THREE.Vector3(0, 0.003, -0.08), new THREE.Vector3(0, 0.003, 0.08)
+    ]);
+    const crossMat = new THREE.LineBasicMaterial({ color: 0xfacc15, linewidth: 2 });
+    const crossLine = new THREE.LineSegments(crossGeo, crossMat);
+    incisionGroup.add(crossLine);
+
+    tableGroup.add(incisionGroup);
+    scene.add(tableGroup);
+
+    // 4. Instrument Tip Projection Shadow (Real-time Drop Target)
+    const tipShadowGeo = new THREE.RingGeometry(0.03, 0.07, 24);
+    tipShadowGeo.rotateX(-Math.PI / 2);
+    const tipShadowMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
+    const tipShadowMesh = new THREE.Mesh(tipShadowGeo, tipShadowMat);
+    tipShadowMesh.position.set(1.85, -1.39, 0.0);
+    scene.add(tipShadowMesh);
+
+    /* =============================================================
+       2. Anatomical Doctor's Hand & Wearable Wrist IMU Tracker Model
+       ============================================================= */
+    const armGroup = new THREE.Group();
+
+    // Reusable Materials
+    const scrubSleeveMat = new THREE.MeshStandardMaterial({
+      color: 0x0f766e, // Surgical Teal Scrub
+      roughness: 0.70,
+      metalness: 0.05
+    });
+    const scrubCuffMat = new THREE.MeshStandardMaterial({
+      color: 0x134e4a, // Ribbed Elastic Wrist Cuff
+      roughness: 0.85,
+      metalness: 0.02
+    });
+    const skinMat = new THREE.MeshStandardMaterial({
+      color: 0xf5d0b5, // Natural skin tone under glove
+      roughness: 0.55,
+      metalness: 0.0
+    });
+
+    // Glove Materials (Sterile Nitrile / Latex)
+    const gloveColors = {
+      blue: 0x93c5fd,  // Nitrile Medical Powder-Blue
+      white: 0xf1f5f9, // Sterile Latex White
+      teal: 0x5eead4   // Surgical Mint Green
+    };
+    const gloveMat = new THREE.MeshStandardMaterial({
+      color: gloveColors.blue,
+      roughness: 0.32,
+      metalness: 0.06
+    });
+
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      metalness: 0.95,
+      roughness: 0.12
+    });
+    const needleMat = new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      metalness: 0.85,
+      roughness: 0.20
+    });
+
+    // Helper: Create smoothed cylinder segment
+    function createSegment(rTop, rBot, len, mat, pos, rot) {
+      const geo = new THREE.CylinderGeometry(rTop, rBot, len, 18);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      if (rot) mesh.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
+      if (pos) mesh.position.set(pos.x || 0, pos.y || 0, pos.z || 0);
+      return mesh;
+    }
+
+    // Helper: Create joint sphere
+    function createJoint(r, mat, pos) {
+      const geo = new THREE.SphereGeometry(r, 16, 16);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      if (pos) mesh.position.set(pos.x, pos.y, pos.z);
+      return mesh;
+    }
+
+    // --- A. Lengan Baju Bedah Dokter (Doctor's Surgical Gown Forearm) ---
+    const sleeveGeo = new THREE.CylinderGeometry(0.33, 0.42, 1.7, 24);
+    sleeveGeo.rotateZ(Math.PI / 2);
+    const sleeveMesh = new THREE.Mesh(sleeveGeo, scrubSleeveMat);
+    sleeveMesh.position.set(-0.85, 0, 0);
+    sleeveMesh.castShadow = true;
+    armGroup.add(sleeveMesh);
+
+    // Ribbed elastic sleeve cuff
+    const cuffGeo = new THREE.TorusGeometry(0.32, 0.045, 14, 28);
+    cuffGeo.rotateY(Math.PI / 2);
+    const cuffMesh = new THREE.Mesh(cuffGeo, scrubCuffMat);
+    cuffMesh.position.set(0.01, 0, 0);
+    armGroup.add(cuffMesh);
+
+    // Visible wrist section leading into glove
+    const wristSkin = createSegment(0.26, 0.28, 0.20, skinMat, { x: 0.09, y: 0, z: 0 }, { z: Math.PI / 2 });
+    armGroup.add(wristSkin);
+
+    // --- B. Tag IMU Bosch BNO055 di Pergelangan Tangan Dokter ---
+    const strapGeo = new THREE.CylinderGeometry(0.30, 0.30, 0.26, 28);
+    strapGeo.rotateZ(Math.PI / 2);
+    const strapMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4, metalness: 0.3 });
+    const strapMesh = new THREE.Mesh(strapGeo, strapMat);
+    strapMesh.position.set(0.14, 0, 0);
+    armGroup.add(strapMesh);
+
+    const tagBaseGeo = new THREE.BoxGeometry(0.38, 0.10, 0.36);
+    const tagMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.25, metalness: 0.7 });
+    const tagBase = new THREE.Mesh(tagBaseGeo, tagMat);
+    tagBase.position.set(0.14, 0.32, 0);
+    armGroup.add(tagBase);
+
+    const tagCoverGeo = new THREE.BoxGeometry(0.30, 0.02, 0.28);
+    const tagCoverMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.1, metalness: 0.8 });
+    const tagCover = new THREE.Mesh(tagCoverGeo, tagCoverMat);
+    tagCover.position.set(0.14, 0.375, 0);
+    armGroup.add(tagCover);
+
+    const chipGeo = new THREE.BoxGeometry(0.10, 0.015, 0.10);
+    const chipMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, metalness: 0.9, roughness: 0.2 });
+    const chipMesh = new THREE.Mesh(chipGeo, chipMat);
+    chipMesh.position.set(0.14, 0.385, 0);
+    armGroup.add(chipMesh);
+
+    const pwrLedGeo = new THREE.SphereGeometry(0.022, 12, 12);
+    const pwrLedMat = new THREE.MeshBasicMaterial({ color: 0x22c55e });
+    const pwrLed = new THREE.Mesh(pwrLedGeo, pwrLedMat);
+    pwrLed.position.set(0.08, 0.38, 0.08);
+    armGroup.add(pwrLed);
+
+    const dataLedMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const tagDataLed = new THREE.Mesh(pwrLedGeo, dataLedMat);
+    tagDataLed.position.set(0.08, 0.38, -0.08);
+    armGroup.add(tagDataLed);
+
+    const tagAxes = new THREE.AxesHelper(0.75);
+    tagAxes.position.set(0.14, 0.42, 0);
+    armGroup.add(tagAxes);
+
+    // --- C. Tangan Dokter dengan Sarung Tangan Bedah (Doctor's Gloved Hand) ---
+    const handGroup = new THREE.Group();
+
+    const gloveRollGeo = new THREE.TorusGeometry(0.27, 0.035, 14, 28);
+    gloveRollGeo.rotateY(Math.PI / 2);
+    const gloveRoll = new THREE.Mesh(gloveRollGeo, gloveMat);
+    gloveRoll.position.set(0.06, 0, 0);
+    handGroup.add(gloveRoll);
+
+    const palmGeo = new THREE.BoxGeometry(0.68, 0.24, 0.54);
+    const palmMesh = new THREE.Mesh(palmGeo, gloveMat);
+    palmMesh.position.set(0.52, -0.01, 0);
+    palmMesh.castShadow = true;
+    handGroup.add(palmMesh);
+
+    const thenarGeo = new THREE.SphereGeometry(0.17, 16, 16);
+    thenarGeo.scale(1.2, 0.8, 1.0);
+    const thenarMesh = new THREE.Mesh(thenarGeo, gloveMat);
+    thenarMesh.position.set(0.38, -0.05, 0.18);
+    handGroup.add(thenarMesh);
+
+    const hypoGeo = new THREE.SphereGeometry(0.14, 14, 14);
+    hypoGeo.scale(1.1, 0.7, 0.9);
+    const hypoMesh = new THREE.Mesh(hypoGeo, gloveMat);
+    hypoMesh.position.set(0.36, -0.04, -0.18);
+    handGroup.add(hypoMesh);
+
+    function buildFinger(mcpPos, phalanxLengths, phalanxRadius, angles, isThumb = false) {
+      const fGroup = new THREE.Group();
+      fGroup.position.copy(mcpPos);
+      fGroup.add(createJoint(phalanxRadius * 1.15, gloveMat, { x: 0, y: 0, z: 0 }));
+
+      const p1 = createSegment(phalanxRadius * 0.95, phalanxRadius, phalanxLengths[0], gloveMat,
+        { x: phalanxLengths[0] / 2, y: 0, z: 0 }, { z: Math.PI / 2 });
+      const joint1 = new THREE.Group();
+      joint1.rotation.set(angles[0].x || 0, angles[0].y || 0, angles[0].z || 0);
+      joint1.add(p1);
+
+      const pipPos = { x: phalanxLengths[0], y: 0, z: 0 };
+      joint1.add(createJoint(phalanxRadius * 0.95, gloveMat, pipPos));
+
+      const p2 = createSegment(phalanxRadius * 0.85, phalanxRadius * 0.95, phalanxLengths[1], gloveMat,
+        { x: phalanxLengths[1] / 2, y: 0, z: 0 }, { z: Math.PI / 2 });
+      const joint2 = new THREE.Group();
+      joint2.position.copy(pipPos);
+      joint2.rotation.set(angles[1].x || 0, angles[1].y || 0, angles[1].z || 0);
+      joint2.add(p2);
+
+      const dipPos = { x: phalanxLengths[1], y: 0, z: 0 };
+      joint2.add(createJoint(phalanxRadius * 0.85, gloveMat, dipPos));
+
+      if (phalanxLengths[2]) {
+        const p3 = createSegment(phalanxRadius * 0.70, phalanxRadius * 0.85, phalanxLengths[2], gloveMat,
+          { x: phalanxLengths[2] / 2, y: 0, z: 0 }, { z: Math.PI / 2 });
+        const joint3 = new THREE.Group();
+        joint3.position.copy(dipPos);
+        joint3.rotation.set(angles[2].x || 0, angles[2].y || 0, angles[2].z || 0);
+        joint3.add(p3);
+
+        const tipPos = { x: phalanxLengths[2], y: 0, z: 0 };
+        joint3.add(createJoint(phalanxRadius * 0.72, gloveMat, tipPos));
+        joint2.add(joint3);
+      } else {
+        joint2.add(createJoint(phalanxRadius * 0.80, gloveMat, dipPos));
+      }
+
+      joint1.add(joint2);
+      fGroup.add(joint1);
+      return fGroup;
+    }
+
+    // 5 Anatomical fingers in precision grip
+    handGroup.add(buildFinger(new THREE.Vector3(0.46, -0.03, 0.22), [0.26, 0.22], 0.088,
+      [{ x: -0.25, y: -0.65, z: 0.15 }, { x: 0.05, y: -0.30, z: -0.10 }], true));
+    handGroup.add(buildFinger(new THREE.Vector3(0.85, 0.05, 0.16), [0.28, 0.22, 0.18], 0.075,
+      [{ x: 0.0, y: 0.05, z: -0.18 }, { x: 0.0, y: 0.0, z: -0.28 }, { x: 0.0, y: 0.0, z: -0.22 }]));
+    handGroup.add(buildFinger(new THREE.Vector3(0.88, 0.04, 0.05), [0.30, 0.24, 0.18], 0.078,
+      [{ x: 0.0, y: 0.0, z: -0.28 }, { x: 0.0, y: 0.0, z: -0.45 }, { x: 0.0, y: 0.0, z: -0.35 }]));
+    handGroup.add(buildFinger(new THREE.Vector3(0.85, 0.02, -0.07), [0.27, 0.21, 0.17], 0.072,
+      [{ x: 0.0, y: -0.05, z: -0.42 }, { x: 0.0, y: 0.0, z: -0.65 }, { x: 0.0, y: 0.0, z: -0.45 }]));
+    handGroup.add(buildFinger(new THREE.Vector3(0.80, -0.01, -0.19), [0.23, 0.17, 0.15], 0.065,
+      [{ x: 0.0, y: -0.10, z: -0.50 }, { x: 0.0, y: 0.0, z: -0.70 }, { x: 0.0, y: 0.0, z: -0.45 }]));
+
+    armGroup.add(handGroup);
+
+    // --- D. Instrumen Bedah (Needle Driver & Curved Suture Needle) ---
+    const toolGroup = new THREE.Group();
+    toolGroup.add(createSegment(0.030, 0.024, 1.65, steelMat, { x: 1.25, y: -0.01, z: 0.09 }, { z: Math.PI / 2 }));
+    toolGroup.add(createSegment(0.030, 0.024, 1.65, steelMat, { x: 1.25, y: -0.03, z: 0.11 }, { z: Math.PI / 2 }));
+
+    const ringGeo = new THREE.TorusGeometry(0.12, 0.022, 14, 24);
+    ringGeo.rotateY(Math.PI / 2);
+    const ringMesh1 = new THREE.Mesh(ringGeo, steelMat);
+    ringMesh1.position.set(0.45, -0.02, 0.08);
+    toolGroup.add(ringMesh1);
+    const ringMesh2 = new THREE.Mesh(ringGeo, steelMat);
+    ringMesh2.position.set(0.45, -0.08, 0.13);
+    toolGroup.add(ringMesh2);
+
+    const pivotGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.06, 16);
+    const pivotMesh = new THREE.Mesh(pivotGeo, steelMat);
+    pivotMesh.position.set(1.48, -0.02, 0.10);
+    toolGroup.add(pivotMesh);
+
+    const jawGeo = new THREE.BoxGeometry(0.38, 0.04, 0.04);
+    const jawMesh = new THREE.Mesh(jawGeo, steelMat);
+    jawMesh.position.set(1.86, -0.02, 0.10);
+    toolGroup.add(jawMesh);
+
+    const needleGeo = new THREE.TorusGeometry(0.20, 0.016, 14, 28, Math.PI * 1.25);
+    const needleMesh = new THREE.Mesh(needleGeo, needleMat);
+    needleMesh.position.set(2.05, -0.02, 0.10);
+    needleMesh.rotation.x = Math.PI / 2;
+    needleMesh.rotation.z = 0.2;
+    toolGroup.add(needleMesh);
+
+    const needleTipMesh = new THREE.Object3D();
+    needleTipMesh.position.set(2.24, 0.05, 0.10);
+    toolGroup.add(needleTipMesh);
+
+    const threadCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(1.95, -0.02, 0.10),
+      new THREE.Vector3(1.85, -0.15, 0.15),
+      new THREE.Vector3(1.70, -0.35, 0.12),
+      new THREE.Vector3(1.50, -0.50, 0.05),
+      new THREE.Vector3(1.30, -0.60, -0.05)
+    ]);
+    const threadGeo = new THREE.TubeGeometry(threadCurve, 20, 0.005, 6, false);
+    const threadMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const threadMesh = new THREE.Mesh(threadGeo, threadMat);
+    toolGroup.add(threadMesh);
+
+    armGroup.add(toolGroup);
+    scene.add(armGroup);
+
+    document.getElementById('glove-color').addEventListener('change', (e) => {
+      const col = gloveColors[e.target.value] || gloveColors.blue;
+      gloveMat.color.setHex(col);
+    });
+
+    /* =============================================================
+       3. 3D Live Trajectory Trail Ribbon (Surgical Needle Path)
+       ============================================================= */
+    const MAX_TRAIL_PTS = 220;
+    const trailPositions = new Float32Array(MAX_TRAIL_PTS * 3);
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+    const trailMat = new THREE.LineBasicMaterial({ color: 0x10b981, linewidth: 2 });
+    const trailLine = new THREE.Line(trailGeo, trailMat);
+    scene.add(trailLine);
+    let trailHistory = [];
+
+    function pushTrailPoint(x, y, z) {
+      trailHistory.push(new THREE.Vector3(x, y, z));
+      if (trailHistory.length > MAX_TRAIL_PTS) trailHistory.shift();
+      for (let i = 0; i < MAX_TRAIL_PTS; i++) {
+        const pt = trailHistory[Math.min(i, trailHistory.length - 1)] || new THREE.Vector3();
+        trailPositions[i * 3] = pt.x;
+        trailPositions[i * 3 + 1] = pt.y;
+        trailPositions[i * 3 + 2] = pt.z;
+      }
+      trailGeo.attributes.position.needsUpdate = true;
+    }
+
+    /* =============================================================
+       4. Real-Time Oscilloscopes (PCA Waveform & Autocorrelation)
+       ============================================================= */
+    const waveCanvas = document.getElementById('wave-canvas');
+    const waveCtx = waveCanvas.getContext('2d');
+    const autoCanvas = document.getElementById('autocorr-canvas');
+    const autoCtx = autoCanvas.getContext('2d');
+
+    const waveHistory = [];
+    const repMarkers = [];
+    const MAX_WAVE_PTS = 200;
+    let prevRepCount = 0;
+
+    function drawScopes(sigVal, autocorrArr, didNewRep) {
+      waveHistory.push(sigVal);
+      repMarkers.push(didNewRep);
+      if (waveHistory.length > MAX_WAVE_PTS) {
+        waveHistory.shift();
+        repMarkers.shift();
+      }
+
+      // Draw PCA Motion Wave
+      const w = waveCanvas.width, h = waveCanvas.height;
+      waveCtx.clearRect(0, 0, w, h);
+      waveCtx.strokeStyle = '#1e293b';
+      waveCtx.beginPath();
+      waveCtx.moveTo(0, h / 2);
+      waveCtx.lineTo(w, h / 2);
+      waveCtx.stroke();
+
+      const maxAmp = Math.max(40, ...waveHistory.map(v => Math.abs(v)));
+      waveCtx.strokeStyle = '#38bdf8';
+      waveCtx.lineWidth = 1.8;
+      waveCtx.beginPath();
+      for (let i = 0; i < waveHistory.length; i++) {
+        const x = (i / (MAX_WAVE_PTS - 1)) * w;
+        const y = h / 2 - (waveHistory[i] / maxAmp) * (h * 0.42);
+        if (i === 0) waveCtx.moveTo(x, y);
+        else waveCtx.lineTo(x, y);
+      }
+      waveCtx.stroke();
+
+      for (let i = 0; i < repMarkers.length; i++) {
+        if (repMarkers[i]) {
+          const x = (i / (MAX_WAVE_PTS - 1)) * w;
+          waveCtx.strokeStyle = '#22c55e';
+          waveCtx.lineWidth = 1.6;
+          waveCtx.beginPath();
+          waveCtx.moveTo(x, 4);
+          waveCtx.lineTo(x, h - 4);
+          waveCtx.stroke();
+        }
+      }
+
+      if (autocorrArr && autocorrArr.length > 1) {
+        const aw = autoCanvas.width, ah = autoCanvas.height;
+        autoCtx.clearRect(0, 0, aw, ah);
+        autoCtx.strokeStyle = '#1e293b';
+        autoCtx.beginPath();
+        autoCtx.moveTo(0, ah * 0.55);
+        autoCtx.lineTo(aw, ah * 0.55);
+        autoCtx.stroke();
+
+        autoCtx.strokeStyle = '#a855f7';
+        autoCtx.lineWidth = 2.0;
+        autoCtx.beginPath();
+        for (let i = 0; i < autocorrArr.length; i++) {
+          const x = (i / (autocorrArr.length - 1)) * aw;
+          const y = ah * 0.55 - autocorrArr[i] * (ah * 0.42);
+          if (i === 0) autoCtx.moveTo(x, y);
+          else autoCtx.lineTo(x, y);
+        }
+        autoCtx.stroke();
+      }
+    }
+
+    /* =============================================================
+       5. Decoupled 60 FPS Render Loop & Non-Blocking State Engine
+       ============================================================= */
+    let targetQuat = new THREE.Quaternion();
+    let currentQuat = new THREE.Quaternion();
+    let targetPos = new THREE.Vector3();
+    let currentPos = new THREE.Vector3();
+    let tareQuat = null;
+    let tarePos = new THREE.Vector3(0, 0, 0);
+    let currentPosScale = 0.06; // Calibrated 1:1 Operating Table Metric Scale (1 Three.js unit = ~16 cm)
+
+    let latestData = null;
+    let hasNewData = false;
+    let lastDomUpdate = 0;
+    let lastScopeUpdate = 0;
+    const tempTipPos = new THREE.Vector3();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+
+      currentQuat.slerp(targetQuat, 0.90);
+      currentPos.lerp(targetPos, 0.85);
+      armGroup.quaternion.copy(currentQuat);
+      armGroup.position.copy(currentPos);
+
+      needleTipMesh.getWorldPosition(tempTipPos);
+      pushTrailPoint(tempTipPos.x, tempTipPos.y, tempTipPos.z);
+      if (tipShadowMesh) {
+        tipShadowMesh.position.set(tempTipPos.x, -1.39, tempTipPos.z);
+        const heightAboveTable = Math.max(0.0, tempTipPos.y - (-1.39));
+        tipShadowMesh.material.opacity = Math.max(0.20, Math.min(0.90, 0.85 - heightAboveTable * 0.30));
+      }
+
+      const now = performance.now();
+
+      if (hasNewData && latestData && (now - lastDomUpdate >= 65)) {
+        updateDOM(latestData);
+        lastDomUpdate = now;
+      }
+
+      if (hasNewData && latestData && latestData.analytics && (now - lastScopeUpdate >= 40)) {
+        const an = latestData.analytics;
+        drawScopes(an.signal_1d || 0, an.autocorr || [], an.rep_count > prevRepCount);
+        prevRepCount = an.rep_count;
+        lastScopeUpdate = now;
+        hasNewData = false;
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / (window.innerHeight - 52);
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight - 52);
+    });
+
+    /* =============================================================
+       6. DOM Metrics, Pattern Breakdown & Repetition History
+       ============================================================= */
+    let isTestActive = false;
+    let testSeconds = 0;
+    let testTimerInterval = null;
+
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function updateDOM(data) {
+      if (data.rate_hz !== undefined) {
+        document.getElementById('rate-badge').textContent = data.rate_hz.toFixed(1) + ' Hz';
+      }
+
+      const euler = new THREE.Euler().setFromQuaternion(armGroup.quaternion, 'YXZ');
+      document.getElementById('val-roll').textContent = THREE.MathUtils.radToDeg(euler.x).toFixed(1) + '°';
+      document.getElementById('val-pitch').textContent = THREE.MathUtils.radToDeg(euler.z).toFixed(1) + '°';
+      document.getElementById('val-yaw').textContent = THREE.MathUtils.radToDeg(euler.y).toFixed(1) + '°';
+
+      document.getElementById('val-quat').textContent =
+        `[${data.qw.toFixed(2)}, ${data.qx.toFixed(2)}, ${data.qy.toFixed(2)}, ${data.qz.toFixed(2)}]`;
+      document.getElementById('val-gyro').textContent =
+        `[${data.gx.toFixed(1)}, ${data.gy.toFixed(1)}, ${data.gz.toFixed(1)}]`;
+      document.getElementById('val-accel').textContent =
+        `[${data.ax.toFixed(2)}, ${data.ay.toFixed(2)}, ${data.az.toFixed(2)}]`;
+
+      const an = data.analytics;
+      if (!an) return;
+
+      const px = an.pos_cm[0], py = an.pos_cm[1], pz = an.pos_cm[2];
+      const px_rel = px - tarePos.x;
+      const py_rel = py - tarePos.y;
+      const pz_rel = pz - tarePos.z;
+      document.getElementById('val-px').textContent = px_rel.toFixed(1);
+      document.getElementById('val-py').textContent = py_rel.toFixed(1);
+      document.getElementById('val-pz').textContent = pz_rel.toFixed(1);
+
+      const dist = Math.sqrt(px_rel * px_rel + py_rel * py_rel + pz_rel * pz_rel);
+      const distEl = document.getElementById('val-dist-site');
+      if (distEl) distEl.textContent = dist.toFixed(1) + ' cm';
+
+      const zoneEl = document.getElementById('val-zone');
+      if (zoneEl) {
+        if (dist <= 10.0) {
+          zoneEl.textContent = 'Incision Center (≤10cm)';
+          zoneEl.style.color = '#22c55e';
+        } else if (dist <= 25.0) {
+          zoneEl.textContent = 'Sterile Workfield (≤25cm)';
+          zoneEl.style.color = '#38bdf8';
+        } else {
+          zoneEl.textContent = 'Table Boundary (>25cm)';
+          zoneEl.style.color = '#f59e0b';
+        }
+      }
+
+      const vx = an.vel_cms[0], vy = an.vel_cms[1], vz = an.vel_cms[2];
+      const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      document.getElementById('val-speed').textContent = speed.toFixed(1) + ' cm/s';
+
+      const zuptEl = document.getElementById('zupt-badge');
+      if (an.is_stationary) {
+        zuptEl.textContent = 'ZUPT CLAMPED';
+        zuptEl.style.background = '#065f46';
+        zuptEl.style.color = '#6ee7b7';
+      } else {
+        zuptEl.textContent = 'MOVING';
+        zuptEl.style.background = '#1e3a8a';
+        zuptEl.style.color = '#93c5fd';
+      }
+
+      // Repetition counter
+      const repEl = document.getElementById('val-reps');
+      if (an.rep_count > prevRepCount) {
+        repEl.style.transform = 'scale(1.22)';
+        setTimeout(() => { repEl.style.transform = 'scale(1.0)'; }, 160);
+      }
+      repEl.textContent = an.rep_count;
+
+      const stateEl = document.getElementById('val-state');
+      stateEl.textContent = an.activity_state;
+      stateEl.className = 'state-pill ' + (an.activity_state === 'REPETITIVE PATTERN' ? 'state-rep' : 'state-idle');
+
+      document.getElementById('val-pattern').textContent = an.pattern_type;
+      document.getElementById('val-period').textContent = an.auto_period_s > 0 ? (an.auto_period_s.toFixed(2) + ' s') : '-- s';
+      document.getElementById('conf-badge').textContent = `Periodicity: ${Math.round(an.pattern_confidence * 100)}%`;
+
+      document.getElementById('val-cadence').innerHTML = `${an.cadence_rpm.toFixed(1)} <span style="font-size:0.7rem;color:#64748b;">reps/m</span>`;
+      document.getElementById('val-consistency').textContent = `Consistency: ${an.consistency_pct.toFixed(0)}%`;
+      document.getElementById('val-path').innerHTML = `${an.mean_path_cm.toFixed(1)} <span style="font-size:0.7rem;color:#64748b;">cm/rep</span>`;
+      document.getElementById('val-angle').textContent = `Rot Excursion: ${an.mean_angle_deg.toFixed(1)}°`;
+
+      document.getElementById('val-smooth').textContent = `${an.smoothness_pct.toFixed(1)}%`;
+      document.getElementById('bar-smooth').style.width = `${Math.min(100, an.smoothness_pct)}%`;
+
+      document.getElementById('val-tremor').innerHTML = `${an.tremor_rms.toFixed(3)} <span style="font-size:0.68rem;color:#64748b;">m/s²</span>`;
+      const fatLbl = document.getElementById('val-fatigue-lbl');
+      if (an.tremor_rms > 0.25) {
+        fatLbl.textContent = '⚠ Elevated Hand Tremor';
+        fatLbl.style.color = '#f43f5e';
+      } else {
+        fatLbl.textContent = '✓ Steady Surgical Hand';
+        fatLbl.style.color = '#22c55e';
+      }
+
+      document.getElementById('val-sess-time').textContent = (an.session_duration_s || 0).toFixed(1) + ' s';
+      document.getElementById('val-active-time').textContent = an.active_time_s.toFixed(1) + ' s';
+      document.getElementById('val-idle-time').textContent = an.idle_time_s.toFixed(1) + ' s';
+
+      // Update Movement Pattern Breakdown Bars and Counts
+      if (an.pattern_breakdown) {
+        const pb = an.pattern_breakdown;
+        const sut = pb['Suturing / Rotational Arc'] || { count: 0, percentage: 0 };
+        const axi = pb['Instrument / Axial Action'] || { count: 0, percentage: 0 };
+        const rea = pb['Dissection / Linear Reach'] || { count: 0, percentage: 0 };
+        const mic = pb['Micro-Manipulation'] || { count: 0, percentage: 0 };
+
+        document.getElementById('cnt-suture').textContent = `${sut.count}x (${sut.percentage}%)`;
+        document.getElementById('bar-suture').style.width = `${sut.percentage}%`;
+
+        document.getElementById('cnt-axial').textContent = `${axi.count}x (${axi.percentage}%)`;
+        document.getElementById('bar-axial').style.width = `${axi.percentage}%`;
+
+        document.getElementById('cnt-reach').textContent = `${rea.count}x (${rea.percentage}%)`;
+        document.getElementById('bar-reach').style.width = `${rea.percentage}%`;
+
+        document.getElementById('cnt-micro').textContent = `${mic.count}x (${mic.percentage}%)`;
+        document.getElementById('bar-micro').style.width = `${mic.percentage}%`;
+      }
+
+      // Update Recent Repetitions Table
+      if (an.recent_reps && an.recent_reps.length > 0) {
+        const tbody = document.getElementById('rep-table-body');
+        const rows = an.recent_reps.slice().reverse().map(r => `
+          <tr>
+            <td style="color:#22c55e;font-weight:700;">#${r.rep_id}</td>
+            <td style="color:#e2e8f0;">${r.pattern_type.split('/')[0].trim()}</td>
+            <td>${r.duration_s.toFixed(2)}s</td>
+            <td>${r.path_length_cm.toFixed(1)}cm</td>
+            <td>${r.angular_excursion_deg.toFixed(1)}°</td>
+            <td style="color:${r.smoothness_score > 75 ? '#22c55e' : (r.smoothness_score > 50 ? '#38bdf8' : '#f59e0b')}">${r.smoothness_score.toFixed(0)}%</td>
+          </tr>
+        `).join('');
+        tbody.innerHTML = rows;
+      }
+    }
+
+    /* =============================================================
+       7. Start / End Test Session Handlers & Summary Modal
+       ============================================================= */
+    const btnStart = document.getElementById('btn-start');
+    const btnEnd = document.getElementById('btn-end');
+    const timerBadge = document.getElementById('session-timer-badge');
+    const modalOverlay = document.getElementById('modal-overlay');
+
+    function startTestSession() {
+      isTestActive = true;
+      testSeconds = 0;
+      prevRepCount = 0;
+      trailHistory = [];
+
+      btnStart.style.display = 'none';
+      btnEnd.style.display = 'flex';
+      timerBadge.className = 'session-timer-badge timer-recording';
+      timerBadge.innerHTML = '🔴 REC <span id="timer-num">00:00</span>';
+
+      if (testTimerInterval) clearInterval(testTimerInterval);
+      testTimerInterval = setInterval(() => {
+        testSeconds++;
+        const el = document.getElementById('timer-num');
+        if (el) el.textContent = formatTime(testSeconds);
+      }, 1000);
+
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: 'start_session' }));
+      } else {
+        fetch('/api/start_session', { method: 'POST' }).catch(() => {});
+      }
+    }
+
+    function endTestSession() {
+      isTestActive = false;
+      if (testTimerInterval) { clearInterval(testTimerInterval); testTimerInterval = null; }
+
+      btnStart.style.display = 'flex';
+      btnEnd.style.display = 'none';
+      timerBadge.className = 'session-timer-badge';
+      timerBadge.textContent = `✓ Selesai (${formatTime(testSeconds)})`;
+
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: 'end_session' }));
+      } else {
+        fetch('/api/end_session', { method: 'POST' })
+          .then(res => res.json())
+          .then(data => showSessionModal(data))
+          .catch(() => {});
+      }
+    }
+
+    function showSessionModal(report) {
+      if (!report) return;
+      document.getElementById('modal-val-reps').textContent = report.total_repetitions || 0;
+      document.getElementById('modal-val-duration').textContent = `${(report.session_duration_s || 0).toFixed(1)} s`;
+      document.getElementById('modal-val-active-ratio').textContent = `Aktif: ${(report.active_ratio_pct || 0).toFixed(1)}%`;
+
+      const sum = report.summary_metrics || {};
+      document.getElementById('modal-val-cadence').textContent = `${(sum.mean_cadence_rpm || 0).toFixed(1)} reps/m`;
+      document.getElementById('modal-val-smooth').textContent = `${(sum.mean_smoothness_score_pct || 0).toFixed(1)}%`;
+      document.getElementById('modal-val-tremor').textContent = `Tremor: ${(sum.current_tremor_rms_mps2 || 0).toFixed(3)} m/s²`;
+      document.getElementById('modal-val-path').textContent = `${(sum.mean_3d_path_length_cm || 0).toFixed(1)} cm / rep`;
+      document.getElementById('modal-val-angle').textContent = `${(sum.mean_angular_excursion_deg || 0).toFixed(1)}° / rep`;
+      document.getElementById('modal-val-consistency').textContent = `${(sum.cycle_consistency_pct || 0).toFixed(0)}%`;
+
+      // Fill Pattern Breakdown in Modal
+      const modalPatBox = document.getElementById('modal-pattern-box');
+      if (report.pattern_breakdown) {
+        const pb = report.pattern_breakdown;
+        let html = '';
+        for (const [k, v] of Object.entries(pb)) {
+          let barClass = 'bar-suture';
+          if (k.includes('Axial')) barClass = 'bar-axial';
+          else if (k.includes('Reach')) barClass = 'bar-reach';
+          else if (k.includes('Micro')) barClass = 'bar-micro';
+
+          html += `
+            <div class="pat-row" style="margin-bottom:8px;">
+              <div class="pat-header">
+                <span class="pat-name">${k}</span>
+                <span class="pat-badge-cnt" style="font-size:0.85rem;">${v.count}x (${v.percentage}%)</span>
+              </div>
+              <div class="pat-bar-bg" style="height:7px;">
+                <div class="pat-bar-fill ${barClass}" style="width: ${v.percentage}%;"></div>
+              </div>
+            </div>
+          `;
+        }
+        modalPatBox.innerHTML = html;
+      }
+
+      modalOverlay.style.display = 'flex';
+    }
+
+    btnStart.addEventListener('click', startTestSession);
+    btnEnd.addEventListener('click', endTestSession);
+
+    document.getElementById('modal-btn-close').addEventListener('click', () => { modalOverlay.style.display = 'none'; });
+    document.getElementById('modal-btn-dismiss').addEventListener('click', () => { modalOverlay.style.display = 'none'; });
+    document.getElementById('modal-btn-new-test').addEventListener('click', () => {
+      modalOverlay.style.display = 'none';
+      startTestSession();
+    });
+
+    // Tare Heading (Orientation) and Tare Position (Surgical Site Origin)
+    document.getElementById('btn-tare').addEventListener('click', () => {
+      tareQuat = armGroup.quaternion.clone().invert();
+      document.getElementById('tare-badge').style.display = 'inline-block';
+    });
+
+    document.getElementById('btn-tare-pos').addEventListener('click', () => {
+      tarePos.set(0, 0, 0);
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: "tare_position" }));
+      } else {
+        fetch('/api/tare_position', { method: 'POST' }).catch(() => {});
+      }
+      const badge = document.getElementById('pos-tare-badge');
+      if (badge) badge.style.display = 'inline-block';
+    });
+
+    document.getElementById('btn-reset-tare').addEventListener('click', () => {
+      tareQuat = null;
+      tarePos.set(0, 0, 0);
+      trailHistory = [];
+      document.getElementById('tare-badge').style.display = 'none';
+      const badge = document.getElementById('pos-tare-badge');
+      if (badge) badge.style.display = 'none';
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: "reset_origin" }));
+      } else {
+        fetch('/api/reset_origin', { method: 'POST' }).catch(() => {});
+      }
+    });
+
+    const scaleSel = document.getElementById('pos-scale');
+    if (scaleSel) {
+      scaleSel.addEventListener('change', (e) => {
+        currentPosScale = parseFloat(e.target.value) || 0.06;
+      });
+    }
+
+    /* =============================================================
+       8. High-Performance WebSocket Client
+       ============================================================= */
+    let socket = null;
+    let reconnectTimer = null;
+    let simActive = false;
+    let simInterval = null;
+    let simTime = 0.0;
+
+    function connectWebSocket() {
+      const loc = window.location;
+      const wsProto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProto}//${loc.hostname || 'localhost'}:${loc.port || 8080}/ws`;
+
+      const statusDot = document.getElementById('status-dot');
+      const statusText = document.getElementById('status-text');
+      statusDot.className = 'status-dot dot-connecting';
+      statusText.textContent = 'Connecting...';
+
+      try {
+        socket = new WebSocket(wsUrl);
+        socket.onopen = () => {
+          statusDot.className = simActive ? 'status-dot dot-sim' : 'status-dot dot-connected';
+          statusText.textContent = simActive ? 'Surgical Sim (Server DSP)' : 'Live Hardware (/imu)';
+          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'session_report') {
+              showSessionModal(data.report);
+              return;
+            }
+            if (data.type === 'imu') {
+              if ((data.source === 'uart' || data.source === 'ros2') && !simActive) {
+                statusDot.className = 'status-dot dot-connected';
+                statusText.textContent = 'Live Hardware (Direct UART /dev/ttyUSB0)';
+              }
+
+              latestData = data;
+              hasNewData = true;
+
+              const rawQ = new THREE.Quaternion(data.qx, data.qz, -data.qy, data.qw);
+              if (tareQuat) {
+                targetQuat.copy(tareQuat).multiply(rawQ);
+              } else {
+                targetQuat.copy(rawQ);
+              }
+
+              if (data.analytics && data.analytics.pos_cm) {
+                const an = data.analytics;
+                const px = an.pos_cm[0] - tarePos.x;
+                const py = an.pos_cm[1] - tarePos.y;
+                const pz = Math.max(0.0, an.pos_cm[2] - tarePos.z);
+                
+                // Vector in raw world coordinate frame
+                const rawVec = new THREE.Vector3(px * currentPosScale, 0, -py * currentPosScale);
+                if (tareQuat) {
+                  // Rotate translation vector by tared heading yaw so desk-relative movements align 1:1
+                  const euler = new THREE.Euler().setFromQuaternion(tareQuat, 'YXZ');
+                  rawVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), euler.y);
+                }
+
+                const elevY = Math.max(0.0, pz * currentPosScale);
+                targetPos.set(
+                  rawVec.x,
+                  elevY,
+                  rawVec.z
+                );
+              }
+
+              tagDataLed.material.color.setHex(0x38bdf8);
+              setTimeout(() => { tagDataLed.material.color.setHex(0x0369a1); }, 35);
+            }
+          } catch (e) {}
+        };
+
+        socket.onclose = () => {
+          statusDot.className = 'status-dot';
+          statusText.textContent = 'Reconnecting...';
+          reconnectTimer = setTimeout(connectWebSocket, 2000);
+        };
+      } catch (err) {
+        reconnectTimer = setTimeout(connectWebSocket, 3000);
+      }
+    }
+    connectWebSocket();
+
+    /* =============================================================
+       9. Built-in Multi-Pattern Surgical Motion Simulator
+       ============================================================= */
+    document.getElementById('btn-sim').addEventListener('click', () => {
+      simActive = !simActive;
+      const btn = document.getElementById('btn-sim');
+      const simSelect = document.getElementById('sim-profile');
+      const statusDot = document.getElementById('status-dot');
+      const statusText = document.getElementById('status-text');
+
+      if (simActive) {
+        btn.classList.add('btn-active');
+        btn.textContent = '⏹ Stop Demo';
+        simSelect.style.display = 'inline-block';
+        statusDot.className = 'status-dot dot-sim';
+        statusText.textContent = 'Virtual Demo Mode';
+
+        simInterval = setInterval(() => {
+          const dt = 0.02; // 50 Hz sim loop
+          simTime += dt;
+          const profile = simSelect.value;
+
+          let period = 2.0, rollAmp = 48, pitchAmp = 16, yawAmp = 8;
+          let axAmp = 0.65, ayAmp = 0.45, azAmp = 0.25, tremorAmp = 0.02;
+
+          if (profile === 'knot') {
+            period = 0.90; rollAmp = 30; pitchAmp = 22; yawAmp = 15;
+            axAmp = 0.35; ayAmp = 0.30; azAmp = 0.20;
+          } else if (profile === 'dissection') {
+            period = 1.50; rollAmp = 10; pitchAmp = 14; yawAmp = 12;
+            axAmp = 1.65; ayAmp = 1.10; azAmp = 0.45;
+          } else if (profile === 'fatigue') {
+            period = 2.10; rollAmp = 45; pitchAmp = 18; yawAmp = 10;
+            axAmp = 0.70; ayAmp = 0.50; azAmp = 0.30; tremorAmp = 0.55;
+          }
+
+          const omega = (2.0 * Math.PI) / period;
+          const s = Math.sin(omega * simTime);
+          const c = Math.cos(omega * simTime);
+
+          const trem = tremorAmp * Math.sin(2.0 * Math.PI * 10.0 * simTime);
+
+          const rollDeg = rollAmp * s;
+          const pitchDeg = pitchAmp * c;
+          const yawDeg = yawAmp * s;
+
+          const gx = rollAmp * omega * c + trem * 18.0;
+          const gy = -pitchAmp * omega * s + trem * 12.0;
+          const gz = yawAmp * omega * c;
+
+          const ax = axAmp * s + trem;
+          const ay = ayAmp * c + trem * 0.8;
+          const az = azAmp * s + trem * 0.6;
+
+          const e = new THREE.Euler(
+            THREE.MathUtils.degToRad(rollDeg),
+            THREE.MathUtils.degToRad(yawDeg),
+            THREE.MathUtils.degToRad(pitchDeg),
+            'YXZ'
+          );
+          const q = new THREE.Quaternion().setFromEuler(e);
+
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+              action: 'sim_sample',
+              ts: simTime,
+              qw: q.w, qx: q.x, qy: q.y, qz: q.z,
+              ax: ax, ay: ay, az: az,
+              gx: gx, gy: gy, gz: gz
+            }));
+          }
+        }, 20);
+      } else {
+        btn.classList.remove('btn-active');
+        btn.textContent = 'Virtual Demo';
+        simSelect.style.display = 'none';
+        clearInterval(simInterval);
+        statusDot.className = (socket && socket.readyState === WebSocket.OPEN) ? 'status-dot dot-connected' : 'status-dot';
+        statusText.textContent = 'Live Hardware (/imu)';
+      }
+    });
+  </script>
+</body>
+</html>

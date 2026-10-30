@@ -1,0 +1,7 @@
+rep_id,timestamp_s,duration_s,cadence_rpm,path_length_cm,stroke_span_cm,angular_excursion_deg,peak_gyro_dps,peak_vel_cms,smoothness_score,tremor_rms_mps2,pattern_type,pattern_confidence
+1,135.193,2.91,20.6,1.43,0.66,2.0,42.6,15.2,29.8,0.3,Micro-Manipulation,0.45
+2,135.953,0.76,78.9,3.31,2.1,4.4,35.6,14.7,83.2,0.404,Micro-Manipulation,0.45
+3,136.783,0.83,72.3,10.28,3.48,4.2,31.9,12.1,71.4,0.493,Micro-Manipulation,0.45
+4,137.193,0.41,146.3,9.33,4.54,3.4,103.0,13.8,82.8,0.445,Micro-Manipulation,0.45
+5,137.773,0.58,103.4,11.92,4.55,2.4,38.4,15.1,89.4,0.453,Micro-Manipulation,0.45
+6,139.533,1.76,34.1,6.23,3.45,5.6,45.1,9.7,52.0,0.183,Micro-Manipulation,0.45
