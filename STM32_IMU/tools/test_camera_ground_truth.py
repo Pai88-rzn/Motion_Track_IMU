@@ -286,3 +286,19 @@ def test_set_tracking_roi_and_reset():
     assert tracker.object_tracker is None
     assert tracker.object_bbox is None
 
+
+def test_trained_multi_view_enclosure_detector():
+    """Verify trained multi-view template detector identifies device across views."""
+    from camera_ground_truth import IMUEnclosureDetector
+    detector = IMUEnclosureDetector()
+    assert len(detector.templates) >= 5
+
+    # Test detection on one of the real user images if available
+    img_path = os.path.join(os.path.dirname(os.path.dirname(SCRIPT_DIR)), "2026-10-30-154827.jpg")
+    if os.path.exists(img_path):
+        img = cv2.imread(img_path)
+        box, view, score = detector.detect(img, min_score=0.80)
+        assert box is not None
+        assert score >= 0.80
+        assert "front" in view.lower() or "textured" in view.lower()
+

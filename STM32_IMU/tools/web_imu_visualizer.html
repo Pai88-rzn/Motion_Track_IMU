@@ -1423,7 +1423,8 @@
         if (badge) {
           if (cam.detected) {
             if (cam.mode === 'block') {
-              badge.textContent = 'ANALYZER LOCK: BALOK';
+              const viewTag = cam.view ? cam.view.toUpperCase() : 'BALOK';
+              badge.textContent = `ANALYZER: ${viewTag}`;
               badge.className = 'badge-optical badge-locked';
             } else {
               badge.textContent = 'OPTICAL LOCK';

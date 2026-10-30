@@ -8,6 +8,8 @@ Supports both OpenCV 4.5.x and OpenCV 4.7+ API variants.
 """
 
 import sys
+import os
+import glob
 import time
 import logging
 import threading
@@ -109,6 +111,106 @@ def draw_analyzer_box(
     cv2.putText(image, tag_text, (x + 4, tag_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1, cv2.LINE_AA)
 
 
+class IMUEnclosureDetector:
+    """
+    Trained multi-view template and feature detector for the physical
+    black IMU enclosure ('IMU CPRP').
+    Trained on multi-view reference images:
+      - Front textured face
+      - Vertical face with embossed 'IMU CPRP' text
+      - Side edge with horizontal ridges & green LED
+      - End cross-section face
+      - Back plate with mounting ears
+    """
+
+    def __init__(self, template_dir: Optional[str] = None):
+        if template_dir is None:
+            curr_dir = os.path.dirname(os.path.abspath(__file__))
+            template_dir = os.path.join(curr_dir, "models", "imu_templates")
+
+        self.template_dir = template_dir
+        self.templates: Dict[str, Dict] = {}
+        self.load_templates()
+
+    def load_templates(self):
+        """Loads and pre-processes trained reference templates."""
+        if not os.path.exists(self.template_dir):
+            return
+
+        for f in glob.glob(os.path.join(self.template_dir, "*.png")):
+            if "test_" in f or "_crop" in f:
+                continue
+            base = os.path.basename(f).replace(".png", "")
+            img = cv2.imread(f)
+            if img is None:
+                continue
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            self.templates[base] = {
+                "gray": gray,
+                "w": img.shape[1],
+                "h": img.shape[0],
+                "aspect": float(img.shape[1]) / max(1, img.shape[0]),
+            }
+
+    def detect(
+        self, frame: np.ndarray, min_score: float = 0.80
+    ) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[str], float]:
+        """Scans the frame against the trained multi-view template bank."""
+        if not self.templates or frame is None or frame.size == 0 or np.mean(frame) < 8:
+            return None, None, 0.0
+
+        h_f, w_f = frame.shape[:2]
+        gray_f = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        scale_scan = 360.0 / max(h_f, 1)
+        sw_f, sh_f = int(w_f * scale_scan), int(h_f * scale_scan)
+        small_gray = cv2.resize(gray_f, (sw_f, sh_f))
+
+        best_match = None
+        best_val = -1.0
+        best_box = None
+
+        for tname, tinfo in self.templates.items():
+            tmpl_gray = tinfo["gray"]
+            th, tw = tmpl_gray.shape[:2]
+            for scale in [0.35, 0.5, 0.7, 0.9, 1.1]:
+                stw, sth = int(tw * scale_scan * scale), int(th * scale_scan * scale)
+                if stw >= sw_f - 10 or sth >= sh_f - 10 or stw < 20 or sth < 20:
+                    continue
+                small_tmpl = cv2.resize(tmpl_gray, (stw, sth))
+                res = cv2.matchTemplate(small_gray, small_tmpl, cv2.TM_CCOEFF_NORMED)
+                _, max_v, _, max_loc = cv2.minMaxLoc(res)
+                if max_v > best_val:
+                    best_val = max_v
+                    best_match = tname
+                    orig_x = int(max_loc[0] / scale_scan)
+                    orig_y = int(max_loc[1] / scale_scan)
+                    orig_w = int(stw / scale_scan)
+                    orig_h = int(sth / scale_scan)
+                    best_box = (orig_x, orig_y, orig_w, orig_h)
+
+        if best_val >= min_score and best_box is not None:
+            bx, by, bw, bh = best_box
+            bx = max(0, min(w_f - 10, bx))
+            by = max(0, min(h_f - 10, by))
+            bw = max(10, min(w_f - bx, bw))
+            bh = max(10, min(h_f - by, bh))
+            roi = frame[by:by + bh, bx:bx + bw]
+            if roi.size > 0:
+                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                mean_v = np.mean(hsv_roi[:, :, 2])
+                mean_s = np.mean(hsv_roi[:, :, 1])
+                # Physical IMU block is dark matte black (mean V < 125, mean S < 140)
+                if mean_v < 125 and mean_s < 140:
+                    clean_name = (
+                        best_match.split("_", 1)[-1].replace("_", " ")
+                        if "_" in best_match
+                        else best_match
+                    )
+                    return (bx, by, bw, bh), clean_name, best_val
+
+        return None, None, best_val
+
+
 class CameraGroundTruthTracker:
     """
     Thread-safe optical pose tracker using ArUco fiducial markers.
@@ -170,6 +272,8 @@ class CameraGroundTruthTracker:
         self.object_bbox: Optional[Tuple[int, int, int, int]] = None
         self.tracking_mode: str = "auto"  # "aruco", "block", "reticle"
         self._pending_roi: Optional[Tuple[int, int, int, int]] = None
+        self.enclosure_detector = IMUEnclosureDetector()
+        self.last_detected_view: str = "IMU CPRP"
 
         # Threading and synchronization
         self._lock = threading.Lock()
@@ -253,19 +357,35 @@ class CameraGroundTruthTracker:
             self._pending_roi = None
             self.tare_origin = None
             self._tare_requested = True
+            self.last_detected_view = "IMU CPRP"
 
     def auto_detect_black_block(
-        self, frame: np.ndarray, require_center: bool = True
+        self, frame: np.ndarray, require_center: bool = False
     ) -> Optional[Tuple[int, int, int, int]]:
         """Detects prominent dark rectangular block of the IMU enclosure in the frame."""
+        if frame is None or frame.size == 0 or np.mean(frame) < 8:
+            return None
+
+        # 1. First scan using trained multi-view template detector
+        if hasattr(self, "enclosure_detector") and self.enclosure_detector is not None:
+            box, view_name, score = self.enclosure_detector.detect(frame, min_score=0.80)
+            if box is not None:
+                self.last_detected_view = view_name or "IMU CPRP"
+                return box
+
+        # 2. Geometric dark contour fallback
         h, w = frame.shape[:2]
         roi_mask = np.zeros((h, w), dtype=np.uint8)
         margin_x, margin_y = int(w * 0.05), int(h * 0.05)
         roi_mask[margin_y:h - margin_y, margin_x:w - margin_x] = 255
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 75]))
+        mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 95]))
         mask = cv2.bitwise_and(mask, roi_mask)
+
+        # Exclude skin color
+        skin = cv2.inRange(hsv, np.array([0, 30, 55]), np.array([28, 200, 255]))
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(skin))
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -277,10 +397,10 @@ class CameraGroundTruthTracker:
 
         for c in contours:
             area = cv2.contourArea(c)
-            if 400 < area < 40000:
+            if 400 < area < 350000:
                 bx, by, bw, bh = cv2.boundingRect(c)
                 aspect = float(bw) / max(1, bh)
-                if 0.4 < aspect < 2.8:
+                if 0.20 < aspect < 6.5:
                     cx = bx + bw / 2.0
                     cy = by + bh / 2.0
                     dist = np.hypot(cx - w / 2.0, cy - h / 2.0)
@@ -289,6 +409,7 @@ class CameraGroundTruthTracker:
 
         if candidates:
             candidates.sort(key=lambda item: item[0])
+            self.last_detected_view = "IMU CPRP"
             return candidates[0][1]
         return None
 
@@ -482,10 +603,11 @@ class CameraGroundTruthTracker:
                         detected = True
                         tracking_mode = "block"
 
+                        label_name = f"ANALYZER: {self.last_detected_view.upper()} (LOCKED)"
                         draw_analyzer_box(
                             annotated,
                             (bx, by, bw, bh),
-                            label="ANALYZER: IMU BALOK HITAM (LOCKED)",
+                            label=label_name,
                             color=(0, 255, 128),
                             is_locked=True,
                         )
@@ -497,7 +619,7 @@ class CameraGroundTruthTracker:
 
                         cv2.putText(
                             annotated,
-                            "OPTICAL TRACKER: IMU BALOK HITAM",
+                            f"OPTICAL TRACKER: {self.last_detected_view.upper()}",
                             (16, 26),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.42,
@@ -558,10 +680,11 @@ class CameraGroundTruthTracker:
                         detected = True
                         tracking_mode = "block"
 
+                        label_name = f"ANALYZER: {self.last_detected_view.upper()} (ACQUIRED)"
                         draw_analyzer_box(
                             annotated,
                             auto_box,
-                            label="ANALYZER: IMU BALOK HITAM (ACQUIRED)",
+                            label=label_name,
                             color=(0, 240, 255),
                             is_locked=True,
                         )
@@ -614,6 +737,7 @@ class CameraGroundTruthTracker:
         data_dict = {
             "detected": detected,
             "mode": tracking_mode,
+            "view": self.last_detected_view if detected else None,
             "pos_cm": pos_cm,
             "delta_cm": delta_cm,
             "fps": round(self._measured_fps, 1),
