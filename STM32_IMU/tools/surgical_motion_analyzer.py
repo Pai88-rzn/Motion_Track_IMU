@@ -352,12 +352,10 @@ class SurgicalMotionAnalyzer:
 
         # Robust stationary detection:
         # A) Gyro quiet (< 3.0 dps) and body acceleration steady (delta_a < 0.08 m/s^2) with resting accel (< 0.25 m/s^2)
-        # OR B) Gyro < 7.0 dps and unbiased body acceleration < 0.15 m/s^2,
-        # PROVIDED world jerk is low (<= 0.8 m/s^3) so rapid direction reversals are not flagged stationary
+        # OR B) Gyro < 7.0 dps and unbiased body acceleration < 0.15 m/s^2
         is_still = (
-            ((gyro_mag_dps < 3.0 and delta_a_body < 0.08 and a_unbiased_mag < 0.25)
-             or (gyro_mag_dps < 7.0 and a_unbiased_mag < 0.15))
-            and (jerk_mag <= 0.8)
+            (gyro_mag_dps < 3.0 and delta_a_body < 0.08 and a_unbiased_mag < 0.25)
+            or (gyro_mag_dps < 7.0 and a_unbiased_mag < 0.15)
         )
         if is_still:
             self.zupt_counter += 1
@@ -381,13 +379,14 @@ class SurgicalMotionAnalyzer:
                         self.pos_dyn_cm[i] = self.pos_origin_cm[i]
 
         # Adaptive stroke detection & jerk-assisted stroke latching
-        a_thresh = 0.08  # m/s^2 noise floor threshold
+        a_thresh = 0.12  # m/s^2 ambient vibration noise floor threshold
         has_accel = any(abs(aw[i]) > a_thresh for i in range(3))
         has_jerk = jerk_mag > 0.8  # m/s^3 jerk latch threshold
         v_mag = math.sqrt(sum(v * v for v in self.vel_cm_s))
         has_vel = v_mag > 0.8  # cm/s
 
-        if has_jerk:
+        # Only latch stroke active from ongoing motion/stroke to avoid arming from cold rest
+        if has_jerk and (self.stroke_active or has_vel or has_accel):
             # Latch stroke active across rapid reversals / zero crossings
             self.stroke_latch_frames = int(0.20 * self.fs_hz)
         elif self.stroke_latch_frames > 0:
@@ -397,7 +396,7 @@ class SurgicalMotionAnalyzer:
             self.stroke_active = False
             self.stroke_latch_frames = 0
         else:
-            self.stroke_active = has_accel or has_jerk or has_vel or (self.stroke_latch_frames > 0)
+            self.stroke_active = has_accel or has_vel or (self.stroke_latch_frames > 0)
 
         # Power-law non-linear transient boost & deadband during active stroke:
         # a_eff = sign(aw) * max(0, |aw| - a_thresh)^1.1 * K_axis

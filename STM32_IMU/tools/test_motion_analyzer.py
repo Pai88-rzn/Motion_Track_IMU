@@ -249,6 +249,28 @@ class TestSurgicalMotionAnalyzer(unittest.TestCase):
         final_vx = reversal_snaps[-1]["vel_cms"][0]
         self.assertLess(final_vx, -5.0, f"Velocity failed to reverse into negative: {final_vx} cm/s")
 
+    def test_zero_drift_under_ambient_vibrations(self):
+        """Verify that ambient vibrations (< 0.12 m/s^2) do not trigger stroke or cause drift."""
+        analyzer = SurgicalMotionAnalyzer(fs_hz=100.0)
+
+        # Feed 1.5 seconds (150 frames) of ambient vibration at 0.10 m/s^2 (< 0.12 m/s^2 threshold)
+        for i in range(150):
+            t = i * 0.01
+            # 15 Hz vibration with 0.10 m/s^2 amplitude
+            ax = 0.10 * math.sin(2.0 * math.pi * 15.0 * t)
+            ay = 0.10 * math.cos(2.0 * math.pi * 15.0 * t)
+            snap = analyzer.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=ax, ay_mps2=ay, az_mps2=0.0,
+                gx_dps=0.5 * math.sin(t), gy_dps=0.5 * math.cos(t), gz_dps=0.0
+            )
+            # stroke_active must remain False throughout ambient vibration
+            self.assertFalse(snap["stroke_active"], f"Stroke falsely triggered on ambient vibration at frame {i}")
+
+        # Position displacement must remain 0.0 cm
+        pos = snap["pos_cm"]
+        self.assertEqual(pos, [0.0, 0.0, 0.0], f"Position drifted under ambient vibration: {pos}")
+
 
 if __name__ == "__main__":
     unittest.main()
