@@ -16,11 +16,13 @@ import time
 import struct
 import asyncio
 import threading
+from contextlib import asynccontextmanager
 from typing import Set, Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response
+from pydantic import BaseModel
 
 # Ensure local imports from tools/ work regardless of current working directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +30,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from surgical_motion_analyzer import SurgicalMotionAnalyzer
+from camera_ground_truth import CameraGroundTruthTracker, generate_aruco_marker_png
 
 try:
     import serial
@@ -38,10 +41,27 @@ except ImportError:
 HTML_PATH = os.path.join(SCRIPT_DIR, "web_imu_visualizer.html")
 LOG_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "logs")
 
-app = FastAPI(title="Surgical Wrist IMU Hand Motion & Repetition Tracker")
-
 # Global state
 analyzer = SurgicalMotionAnalyzer(fs_hz=100.0, forearm_length_cm=26.0)
+tracker = CameraGroundTruthTracker(video_source=0, marker_size_cm=4.0)
+camera_tracker = tracker  # Interop alias
+
+# Launch optical tracker daemon
+tracker.start()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    tracker.start()
+    yield
+    tracker.stop()
+
+
+app = FastAPI(
+    title="Surgical Wrist IMU Hand Motion & Repetition Tracker",
+    lifespan=lifespan
+)
+
 active_websockets: Set[WebSocket] = set()
 loop: Optional[asyncio.AbstractEventLoop] = None
 packet_count = 0
@@ -61,7 +81,8 @@ latest_imu_data = {
     "ax": 0.0, "ay": 0.0, "az": 0.0,
     "gx": 0.0, "gy": 0.0, "gz": 0.0,
     "rate_hz": 0.0,
-    "analytics": analyzer.get_live_snapshot()
+    "analytics": analyzer.get_live_snapshot(),
+    "camera": tracker.get_latest_data(),
 }
 
 
@@ -123,7 +144,7 @@ def process_imu_sample(
         gx_dps=gx_deg, gy_dps=gy_deg, gz_dps=gz_deg
     )
 
-    latest_imu_data = {
+    latest_imu_data.update({
         "type": "imu",
         "source": source,
         "seq": packet_count,
@@ -142,8 +163,9 @@ def process_imu_sample(
         "gy": gy_deg,
         "gz": gz_deg,
         "rate_hz": round(msg_rate_hz, 1),
-        "analytics": analytics
-    }
+        "analytics": analytics,
+        "camera": tracker.get_latest_data(),
+    })
     return latest_imu_data
 
 
@@ -262,6 +284,7 @@ async def get_index():
 
 @app.get("/api/status")
 async def get_status():
+    cam_data = tracker.get_latest_data()
     return {
         "status": "online",
         "transport": "uart",
@@ -274,6 +297,10 @@ async def get_status():
         "activity_state": analyzer.activity_state,
         "pattern_type": analyzer.current_pattern_type,
         "auto_period_s": round(analyzer.auto_period_s, 2),
+        "stroke_scales": list(analyzer.get_stroke_scales()),
+        "camera_detected": cam_data.get("detected", False),
+        "camera_status": cam_data.get("status", "unknown"),
+        "camera_fps": cam_data.get("fps", 0.0),
     }
 
 
@@ -309,13 +336,82 @@ async def api_reset_session():
 @app.post("/api/tare_position")
 async def api_tare_position():
     analyzer.tare_position()
+    latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+    latest_imu_data["camera"] = tracker.get_latest_data()
     return {"status": "ok", "origin": analyzer.pos_origin_cm}
 
 
 @app.post("/api/reset_origin")
 async def api_reset_origin():
     analyzer.reset_origin()
+    latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+    latest_imu_data["camera"] = tracker.get_latest_data()
     return {"status": "ok", "origin": [0.0, 0.0, 0.0]}
+
+
+class StrokeScalesRequest(BaseModel):
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    scale_z: float = 1.0
+
+
+@app.post("/api/tare_both")
+async def api_tare_both():
+    """Tares both IMU origin and Camera optical ground-truth origin."""
+    analyzer.tare_position()
+    tracker.tare()
+    latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+    latest_imu_data["camera"] = tracker.get_latest_data()
+    if active_websockets:
+        await broadcast_imu(json.dumps(latest_imu_data))
+    return {"status": "ok", "message": "IMU and Camera origins tared"}
+
+
+@app.post("/api/set_stroke_scales")
+async def api_set_stroke_scales(payload: StrokeScalesRequest):
+    """Sets per-axis stroke scaling factors for trajectory integration."""
+    analyzer.set_stroke_scales(payload.scale_x, payload.scale_y, payload.scale_z)
+    latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+    latest_imu_data["camera"] = tracker.get_latest_data()
+    if active_websockets:
+        await broadcast_imu(json.dumps(latest_imu_data))
+    return {
+        "status": "ok",
+        "message": "Stroke scales updated",
+        "stroke_scales": [payload.scale_x, payload.scale_y, payload.scale_z],
+    }
+
+
+@app.get("/aruco_marker.png")
+async def get_aruco_marker(marker_id: int = 0, size: int = 400):
+    """Generates and serves an ArUco fiducial marker as PNG bytes."""
+    png_bytes = generate_aruco_marker_png(marker_id=marker_id, size_px=size)
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@app.get("/video_feed")
+async def video_feed(max_frames: Optional[int] = None):
+    """Streams live MJPEG camera frames with optical ground-truth annotations."""
+    async def video_generator():
+        count = 0
+        try:
+            while True:
+                if max_frames is not None and count >= max_frames:
+                    break
+                jpeg_bytes = tracker.get_jpeg_frame()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg_bytes + b"\r\n"
+                )
+                count += 1
+                await asyncio.sleep(0.033)  # ~30 FPS
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+
+    return StreamingResponse(
+        video_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 
 @app.get("/api/export_csv")
@@ -335,6 +431,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_websockets.add(websocket)
     try:
+        latest_imu_data["camera"] = tracker.get_latest_data()
         if latest_imu_data["ts"] > 0:
             await websocket.send_text(json.dumps(latest_imu_data))
         while True:
@@ -347,23 +444,42 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "start_session":
                     analyzer.start_session()
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "end_session":
                     report = analyzer.end_session()
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
                     await websocket.send_text(json.dumps({"type": "session_report", "report": report}))
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "reset_session":
                     analyzer.reset_session()
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "tare_position":
                     analyzer.tare_position()
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "reset_origin":
                     analyzer.reset_origin()
                     latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
+                    await broadcast_imu(json.dumps(latest_imu_data))
+                elif action == "tare_both":
+                    analyzer.tare_position()
+                    tracker.tare()
+                    latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
+                    await broadcast_imu(json.dumps(latest_imu_data))
+                elif action == "set_stroke_scales":
+                    sx = float(cmd.get("scale_x", 1.0))
+                    sy = float(cmd.get("scale_y", 1.0))
+                    sz = float(cmd.get("scale_z", 1.0))
+                    analyzer.set_stroke_scales(sx, sy, sz)
+                    latest_imu_data["analytics"] = analyzer.get_live_snapshot()
+                    latest_imu_data["camera"] = tracker.get_latest_data()
                     await broadcast_imu(json.dumps(latest_imu_data))
                 elif action == "sim_sample":
                     payload = process_imu_sample(
@@ -391,6 +507,7 @@ async def websocket_endpoint(websocket: WebSocket):
         active_websockets.discard(websocket)
 
 
+
 def main():
     global loop
     port = 8080
@@ -400,6 +517,8 @@ def main():
     print(" Surgical Wrist-Worn IMU Hand Motion & Repetition Tracker Server")
     print(f" Direct UART   : {serial_port_name} @ {serial_baud_rate} baud")
     print(f" Web Dashboard : http://localhost:{port}")
+    print(f" Video Feed    : http://localhost:{port}/video_feed")
+    print(f" ArUco Marker  : http://localhost:{port}/aruco_marker.png")
     print(f" Session Report: http://localhost:{port}/api/session_report")
     print(f" Export CSV    : http://localhost:{port}/api/export_csv")
     print(f" WebSocket     : ws://localhost:{port}/ws")
