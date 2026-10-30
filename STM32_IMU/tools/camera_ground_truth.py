@@ -153,7 +153,7 @@ class IMUEnclosureDetector:
             }
 
     def detect(
-        self, frame: np.ndarray, min_score: float = 0.80
+        self, frame: np.ndarray, min_score: float = 0.82
     ) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[str], float]:
         """Scans the frame against the trained multi-view template bank."""
         if not self.templates or frame is None or frame.size == 0 or np.mean(frame) < 8:
@@ -172,20 +172,27 @@ class IMUEnclosureDetector:
         for tname, tinfo in self.templates.items():
             tmpl_gray = tinfo["gray"]
             th, tw = tmpl_gray.shape[:2]
-            for scale in [0.35, 0.5, 0.7, 0.9, 1.1]:
+            for scale in [0.4, 0.6, 0.8, 1.0, 1.2]:
                 stw, sth = int(tw * scale_scan * scale), int(th * scale_scan * scale)
                 if stw >= sw_f - 10 or sth >= sh_f - 10 or stw < 20 or sth < 20:
                     continue
                 small_tmpl = cv2.resize(tmpl_gray, (stw, sth))
                 res = cv2.matchTemplate(small_gray, small_tmpl, cv2.TM_CCOEFF_NORMED)
                 _, max_v, _, max_loc = cv2.minMaxLoc(res)
+
+                orig_x = int(max_loc[0] / scale_scan)
+                orig_y = int(max_loc[1] / scale_scan)
+                orig_w = int(stw / scale_scan)
+                orig_h = int(sth / scale_scan)
+                cy = orig_y + orig_h / 2.0
+
+                # Exclude top hair/ceiling zone (cy < 0.22*h_f)
+                if cy < 0.22 * h_f:
+                    continue
+
                 if max_v > best_val:
                     best_val = max_v
                     best_match = tname
-                    orig_x = int(max_loc[0] / scale_scan)
-                    orig_y = int(max_loc[1] / scale_scan)
-                    orig_w = int(stw / scale_scan)
-                    orig_h = int(sth / scale_scan)
                     best_box = (orig_x, orig_y, orig_w, orig_h)
 
         if best_val >= min_score and best_box is not None:
@@ -368,16 +375,17 @@ class CameraGroundTruthTracker:
 
         # 1. First scan using trained multi-view template detector
         if hasattr(self, "enclosure_detector") and self.enclosure_detector is not None:
-            box, view_name, score = self.enclosure_detector.detect(frame, min_score=0.80)
+            box, view_name, score = self.enclosure_detector.detect(frame, min_score=0.82)
             if box is not None:
                 self.last_detected_view = view_name or "IMU CPRP"
                 return box
 
-        # 2. Geometric dark contour fallback
+        # 2. Geometric dark contour fallback (strict: only high-rectangularity non-hair objects)
         h, w = frame.shape[:2]
         roi_mask = np.zeros((h, w), dtype=np.uint8)
-        margin_x, margin_y = int(w * 0.05), int(h * 0.05)
-        roi_mask[margin_y:h - margin_y, margin_x:w - margin_x] = 255
+        # Exclude top 25% where user's hair and head reside
+        margin_x, margin_y = int(w * 0.05), int(h * 0.25)
+        roi_mask[margin_y:h - int(h * 0.05), margin_x:w - margin_x] = 255
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 95]))
@@ -403,6 +411,13 @@ class CameraGroundTruthTracker:
                 if 0.20 < aspect < 6.5:
                     cx = bx + bw / 2.0
                     cy = by + bh / 2.0
+                    # Hair exclusion: below forehead
+                    if cy < 0.25 * h:
+                        continue
+                    # Rectangularity check: an IMU block fills its bounding box (> 0.65)
+                    rect_fill = float(area) / max(1, bw * bh)
+                    if rect_fill < 0.65:
+                        continue
                     dist = np.hypot(cx - w / 2.0, cy - h / 2.0)
                     if not require_center or dist <= max_dist:
                         candidates.append((dist, (bx, by, bw, bh), area))

@@ -20,19 +20,19 @@ MODELS_DIR = os.path.join(SCRIPT_DIR, "models", "imu_templates")
 TRAINING_IMAGES = {
     "154827_front_textured": {
         "patterns": ["2026-10-30-154827.jpg", "*154827*.jpg"],
-        "bbox": (350, 180, 560, 250),
+        "bbox": (421, 180, 487, 250),
         "view": "front",
         "description": "Front Textured Surface with Texture Pattern",
     },
     "154851_vertical_text_imu_cprp": {
         "patterns": ["2026-10-30-154851.jpg", "*154851*.jpg"],
-        "bbox": (180, 160, 240, 500),
+        "bbox": (245, 160, 175, 466),
         "view": "vertical",
         "description": "Vertical Face with Embossed 'IMU CPRP' Text",
     },
     "154900_side_groove_led": {
         "patterns": ["2026-10-30-154900.jpg", "*154900*.jpg"],
-        "bbox": (320, 340, 480, 85),
+        "bbox": (409, 340, 383, 85),
         "view": "side",
         "description": "Side Edge with Horizontal Grooves and Green LED",
     },
@@ -44,7 +44,7 @@ TRAINING_IMAGES = {
     },
     "154928_back_mounting_ears": {
         "patterns": ["2026-10-30-154928.jpg", "*154928*.jpg"],
-        "bbox": (330, 140, 680, 290),
+        "bbox": (421, 143, 579, 277),
         "view": "back",
         "description": "Back Plate with Side Mounting Ears and Holes",
     },
