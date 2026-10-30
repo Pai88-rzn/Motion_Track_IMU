@@ -369,15 +369,9 @@ class SurgicalMotionAnalyzer:
             for i in range(3):
                 # Continuously adapt body silicon bias when stationary
                 self.acc_bias_body[i] = 0.90 * self.acc_bias_body[i] + 0.10 * a_body[i]
-                # ZUPT: firmly clamp velocity to zero
+                # ZUPT: firmly clamp velocity to zero to eliminate stationary drift
                 self.vel_cm_s[i] = 0.0
-
-                # Hold position steady at destination for 1.0s (100 frames);
-                # then gently bleed residual offset back to surgical origin to prevent long-term drift
-                if self.zupt_counter > 100:
-                    self.pos_dyn_cm[i] = self.pos_origin_cm[i] + (self.pos_dyn_cm[i] - self.pos_origin_cm[i]) * 0.85
-                    if abs(self.pos_dyn_cm[i] - self.pos_origin_cm[i]) < 0.01:
-                        self.pos_dyn_cm[i] = self.pos_origin_cm[i]
+                # Position holds rock-steady at destination without premature snap-back
 
         # Adaptive stroke detection & jerk-assisted stroke latching
         a_thresh = 0.12  # m/s^2 ambient vibration noise floor threshold
@@ -399,14 +393,14 @@ class SurgicalMotionAnalyzer:
         else:
             self.stroke_active = has_accel or has_vel or (self.stroke_latch_frames > 0)
 
-        # Power-law non-linear transient boost & deadband during active stroke:
-        # a_eff = sign(aw) * max(0, |aw| - a_thresh)^1.1 * K_axis
+        # Linear responsive acceleration deadband during active stroke:
+        # a_eff = sign(aw) * max(0, |aw| - a_thresh) * K_axis
         a_eff = [0.0, 0.0, 0.0]
         for i in range(3):
             val = aw[i]
             sign = 1.0 if val > 0.0 else (-1.0 if val < 0.0 else 0.0)
             excess = max(0.0, abs(val) - a_thresh)
-            a_eff[i] = sign * (excess ** 1.1) * self.stroke_scale[i]
+            a_eff[i] = sign * excess * self.stroke_scale[i]
 
         # 2. Extract 8-12 Hz physiological tremor power (m/s^2 RMS)
         tremor_sq = 0.0
@@ -424,16 +418,16 @@ class SurgicalMotionAnalyzer:
                     # Light numerical stabilization damping during active stroke
                     self.vel_cm_s[i] = (self.vel_cm_s[i] + a_cms2 * dt) * 0.998
                 else:
-                    # Bleed velocity when stroke inactive and not yet stationary
-                    self.vel_cm_s[i] *= 0.85
+                    # Smooth coasting velocity decay when stroke inactive and not yet stationary
+                    self.vel_cm_s[i] *= 0.96
                 self.pos_dyn_cm[i] += self.vel_cm_s[i] * dt
 
         # Operating Table Workspace Clamping:
         # Horizontal reach X, Y: +/- 45 cm
         self.pos_dyn_cm[0] = max(-45.0, min(45.0, self.pos_dyn_cm[0]))
         self.pos_dyn_cm[1] = max(-45.0, min(45.0, self.pos_dyn_cm[1]))
-        # Vertical elevation Z: 0.0 cm (table pad surface) to +35.0 cm (high instrument reach)
-        self.pos_dyn_cm[2] = max(0.0, min(35.0, self.pos_dyn_cm[2]))
+        # Bidirectional vertical elevation Z: -35.0 cm (lower reach) to +35.0 cm (high instrument reach)
+        self.pos_dyn_cm[2] = max(-35.0, min(35.0, self.pos_dyn_cm[2]))
 
         # 4. Decoupled Spatial Position: Pure linear displacement relative to Surgical Site Origin
         # (Forearm rotational arc is handled by 3D model orientation directly in visualizer)

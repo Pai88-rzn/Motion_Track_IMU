@@ -11,6 +11,7 @@ import sys
 import os
 import glob
 import time
+import math
 import logging
 import threading
 from typing import Dict, Optional, Tuple, Union
@@ -153,7 +154,7 @@ class IMUEnclosureDetector:
             }
 
     def detect(
-        self, frame: np.ndarray, min_score: float = 0.82
+        self, frame: np.ndarray, min_score: float = 0.76
     ) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[str], float]:
         """Scans the frame against the trained multi-view template bank."""
         if not self.templates or frame is None or frame.size == 0 or np.mean(frame) < 8:
@@ -281,6 +282,9 @@ class CameraGroundTruthTracker:
         self._pending_roi: Optional[Tuple[int, int, int, int]] = None
         self.enclosure_detector = IMUEnclosureDetector()
         self.last_detected_view: str = "IMU CPRP"
+        self.tracking_lost_count: int = 0
+        self.max_lost_frames: int = 12
+        self._smooth_pos: Optional[np.ndarray] = None
 
         # Threading and synchronization
         self._lock = threading.Lock()
@@ -355,6 +359,8 @@ class CameraGroundTruthTracker:
         with self._lock:
             self._pending_roi = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
             self._tare_requested = True
+            self.tracking_lost_count = 0
+            self._smooth_pos = None
 
     def reset_tracker(self):
         """Resets object tracking back to searching/center target reticle."""
@@ -364,6 +370,8 @@ class CameraGroundTruthTracker:
             self._pending_roi = None
             self.tare_origin = None
             self._tare_requested = True
+            self.tracking_lost_count = 0
+            self._smooth_pos = None
             self.last_detected_view = "IMU CPRP"
 
     def auto_detect_black_block(
@@ -375,7 +383,7 @@ class CameraGroundTruthTracker:
 
         # 1. First scan using trained multi-view template detector
         if hasattr(self, "enclosure_detector") and self.enclosure_detector is not None:
-            box, view_name, score = self.enclosure_detector.detect(frame, min_score=0.82)
+            box, view_name, score = self.enclosure_detector.detect(frame, min_score=0.76)
             if box is not None:
                 self.last_detected_view = view_name or "IMU CPRP"
                 return box
@@ -503,6 +511,8 @@ class CameraGroundTruthTracker:
                 self.object_tracker = cv2.TrackerCSRT_create()
                 self.object_tracker.init(frame, pending_roi)
                 self.object_bbox = pending_roi
+                self.tracking_lost_count = 0
+                self._smooth_pos = None
             except Exception as e:
                 logging.debug(f"Failed to initialize CSRT tracker: {e}")
                 self.object_tracker = None
@@ -586,7 +596,6 @@ class CameraGroundTruthTracker:
                     )
 
                 except Exception as e:
-                    import logging
                     logging.debug(f"Optical pose estimation failed: {e}")
                     detected = False
 
@@ -596,15 +605,90 @@ class CameraGroundTruthTracker:
                 try:
                     success, box = self.object_tracker.update(frame)
                     if success:
+                        self.tracking_lost_count = 0
                         bx, by, bw, bh = [int(v) for v in box]
                         self.object_bbox = (bx, by, bw, bh)
+                    else:
+                        self.tracking_lost_count += 1
+                        recovered = False
+                        if self.object_bbox is not None and self.tracking_lost_count <= self.max_lost_frames:
+                            # Local neighborhood search to re-acquire before giving up
+                            prev_x, prev_y, prev_w, prev_h = self.object_bbox
+                            pad_x = int(prev_w * 0.7) + 25
+                            pad_y = int(prev_h * 0.7) + 25
+                            rx1 = max(0, prev_x - pad_x)
+                            ry1 = max(0, prev_y - pad_y)
+                            rx2 = min(w, prev_x + prev_w + pad_x)
+                            ry2 = min(h, prev_y + prev_h + pad_y)
+                            sub_frame = frame[ry1:ry2, rx1:rx2]
+                            if sub_frame.size > 0:
+                                local_box, view_name, score = self.enclosure_detector.detect(sub_frame, min_score=0.70)
+                                if local_box is None:
+                                    # Geometric dark rectangular contour fallback in local neighborhood
+                                    sub_gray = cv2.cvtColor(sub_frame, cv2.COLOR_BGR2GRAY)
+                                    sub_mask = cv2.inRange(sub_gray, 0, 85)
+                                    sub_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                                    sub_mask = cv2.morphologyEx(sub_mask, cv2.MORPH_OPEN, sub_kernel)
+                                    sub_cnts, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                    best_c_box = None
+                                    best_c_dist = float('inf')
+                                    center_sub_x = sub_frame.shape[1] / 2.0
+                                    center_sub_y = sub_frame.shape[0] / 2.0
+                                    for c in sub_cnts:
+                                        c_area = cv2.contourArea(c)
+                                        if 400 < c_area < (sub_frame.shape[0] * sub_frame.shape[1] * 0.95):
+                                            cbx, cby, cbw, cbh = cv2.boundingRect(c)
+                                            fill = float(c_area) / max(1, cbw * cbh)
+                                            if fill >= 0.55:
+                                                dist = np.hypot((cbx + cbw / 2.0) - center_sub_x, (cby + cbh / 2.0) - center_sub_y)
+                                                if dist < best_c_dist:
+                                                    best_c_dist = dist
+                                                    best_c_box = (cbx, cby, cbw, cbh)
+                                    if best_c_box is not None:
+                                        local_box = best_c_box
+                                        view_name = self.last_detected_view
+
+                                if local_box is not None:
+                                    lbx, lby, lbw, lbh = local_box
+                                    bx, by, bw, bh = rx1 + lbx, ry1 + lby, lbw, lbh
+                                    self.object_bbox = (bx, by, bw, bh)
+                                    self.last_detected_view = view_name or self.last_detected_view
+                                    try:
+                                        self.object_tracker = cv2.TrackerCSRT_create()
+                                        self.object_tracker.init(frame, self.object_bbox)
+                                        self.tracking_lost_count = 0
+                                        recovered = True
+                                        success = True
+                                    except Exception:
+                                        pass
+                        if not recovered:
+                            if self.tracking_lost_count <= self.max_lost_frames and self.object_bbox is not None:
+                                # Coast through brief dropout using previous bbox
+                                bx, by, bw, bh = self.object_bbox
+                                success = True
+                            else:
+                                self.object_tracker = None
+                                self.object_bbox = None
+                                self._smooth_pos = None
+
+                    if success and self.object_bbox is not None:
+                        bx, by, bw, bh = self.object_bbox
                         cx = bx + bw / 2.0
                         cy = by + bh / 2.0
-                        # Pinhole depth estimate from known physical dimension (4.0 cm)
-                        est_z = (self.camera_matrix[0, 0] * self.marker_size_cm) / max(10, max(bw, bh))
-                        est_x = (cx - self.camera_matrix[0, 2]) * est_z / self.camera_matrix[0, 0]
-                        est_y = (cy - self.camera_matrix[1, 2]) * est_z / self.camera_matrix[1, 1]
-                        pos = np.array([est_x, est_y, est_z], dtype=float)
+                        # Area-invariant pinhole depth estimate
+                        eff_dim = math.sqrt(max(100.0, float(bw * bh)))
+                        raw_z = (self.camera_matrix[0, 0] * self.marker_size_cm) / max(10.0, eff_dim)
+                        raw_x = (cx - self.camera_matrix[0, 2]) * raw_z / self.camera_matrix[0, 0]
+                        raw_y = (cy - self.camera_matrix[1, 2]) * raw_z / self.camera_matrix[1, 1]
+
+                        if self._smooth_pos is None:
+                            self._smooth_pos = np.array([raw_x, raw_y, raw_z], dtype=float)
+                        else:
+                            self._smooth_pos[0] = 0.50 * self._smooth_pos[0] + 0.50 * raw_x
+                            self._smooth_pos[1] = 0.50 * self._smooth_pos[1] + 0.50 * raw_y
+                            self._smooth_pos[2] = 0.80 * self._smooth_pos[2] + 0.20 * raw_z
+
+                        pos = np.copy(self._smooth_pos)
 
                         with self._lock:
                             self._last_pos = np.copy(pos)
@@ -618,13 +702,15 @@ class CameraGroundTruthTracker:
                         detected = True
                         tracking_mode = "block"
 
-                        label_name = f"ANALYZER: {self.last_detected_view.upper()} (LOCKED)"
+                        is_coasting = (self.tracking_lost_count > 0)
+                        label_name = f"ANALYZER: {self.last_detected_view.upper()} {'(COASTING)' if is_coasting else '(LOCKED)'}"
+                        box_color = (0, 200, 255) if is_coasting else (0, 255, 128)
                         draw_analyzer_box(
                             annotated,
                             (bx, by, bw, bh),
                             label=label_name,
-                            color=(0, 255, 128),
-                            is_locked=True,
+                            color=box_color,
+                            is_locked=not is_coasting,
                         )
 
                         overlay = annotated.copy()
@@ -662,11 +748,11 @@ class CameraGroundTruthTracker:
                             1,
                             cv2.LINE_AA,
                         )
-                    else:
-                        self.object_tracker = None
                 except Exception as e:
                     logging.debug(f"Object tracking error: {e}")
                     self.object_tracker = None
+                    self.object_bbox = None
+                    self._smooth_pos = None
 
             if not detected:
                 auto_box = self.auto_detect_black_block(frame)
@@ -675,13 +761,23 @@ class CameraGroundTruthTracker:
                         self.object_tracker = cv2.TrackerCSRT_create()
                         self.object_tracker.init(frame, auto_box)
                         self.object_bbox = auto_box
+                        self.tracking_lost_count = 0
                         bx, by, bw, bh = auto_box
                         cx = bx + bw / 2.0
                         cy = by + bh / 2.0
-                        est_z = (self.camera_matrix[0, 0] * self.marker_size_cm) / max(10, max(bw, bh))
-                        est_x = (cx - self.camera_matrix[0, 2]) * est_z / self.camera_matrix[0, 0]
-                        est_y = (cy - self.camera_matrix[1, 2]) * est_z / self.camera_matrix[1, 1]
-                        pos = np.array([est_x, est_y, est_z], dtype=float)
+                        eff_dim = math.sqrt(max(100.0, float(bw * bh)))
+                        raw_z = (self.camera_matrix[0, 0] * self.marker_size_cm) / max(10.0, eff_dim)
+                        raw_x = (cx - self.camera_matrix[0, 2]) * raw_z / self.camera_matrix[0, 0]
+                        raw_y = (cy - self.camera_matrix[1, 2]) * raw_z / self.camera_matrix[1, 1]
+
+                        if self._smooth_pos is None:
+                            self._smooth_pos = np.array([raw_x, raw_y, raw_z], dtype=float)
+                        else:
+                            self._smooth_pos[0] = 0.50 * self._smooth_pos[0] + 0.50 * raw_x
+                            self._smooth_pos[1] = 0.50 * self._smooth_pos[1] + 0.50 * raw_y
+                            self._smooth_pos[2] = 0.80 * self._smooth_pos[2] + 0.20 * raw_z
+
+                        pos = np.copy(self._smooth_pos)
 
                         with self._lock:
                             self._last_pos = np.copy(pos)

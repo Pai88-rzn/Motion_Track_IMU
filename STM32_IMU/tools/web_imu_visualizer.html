@@ -1453,13 +1453,13 @@
         // Camera-to-World Axis Mapping based on mounting configuration
         const mountSelect = document.getElementById('camera-mount-select');
         const mount = mountSelect ? mountSelect.value : 'frontal';
-        let delta_world = [cdx, cdz, -cdy];
+        let delta_world = [cdx, -cdy, cdz];
         if (mount === 'overhead') {
-          // Overhead mount: Cam X -> World X, Cam Y -> World Y, Cam Z -> World -Z
-          delta_world = [cdx, cdy, -cdz];
+          // Overhead mount: Cam X -> World X, Cam Y -> World Z (depth), Cam Z -> World Y (elevation)
+          delta_world = [cdx, -cdz, cdy];
         } else {
-          // Frontal mount (Default): Cam X -> World X, Cam Y -> World -Z, Cam Z -> World Y
-          delta_world = [cdx, cdz, -cdy];
+          // Frontal mount (Default): Cam X -> World X, Cam Y -> World Y (elevation), Cam Z -> World Z (depth)
+          delta_world = [cdx, -cdy, cdz];
         }
 
         // Camera Ground Truth world position
@@ -1489,8 +1489,8 @@
 
         if (cam.detected) {
           const err_x = imu_x - delta_world[0];
-          const err_y = imu_y - delta_world[1];
-          const err_z = imu_z - delta_world[2];
+          const err_y = imu_z - delta_world[1];
+          const err_z = imu_y - delta_world[2];
           const err3d = Math.sqrt(err_x * err_x + err_y * err_y + err_z * err_z);
 
           if (elCdx) elCdx.textContent = (err_x >= 0 ? '+' : '') + err_x.toFixed(1);
@@ -1722,11 +1722,36 @@
                 targetQuat.copy(rawQ);
               }
 
-              if (data.analytics && data.analytics.pos_cm) {
+              const cam = data.camera;
+              const hasOpticalLock = cam && cam.detected && cam.delta_cm && cam.delta_cm.length >= 3;
+
+              if (hasOpticalLock) {
+                // Optical Ground Truth provides drift-free millimeter-accurate translation
+                const cdx = cam.delta_cm[0];
+                const cdy = cam.delta_cm[1];
+                const cdz = cam.delta_cm[2];
+
+                const mountSelect = document.getElementById('camera-mount-select');
+                const mount = mountSelect ? mountSelect.value : 'frontal';
+
+                let optX, optY, optZ;
+                if (mount === 'overhead') {
+                  optX = cdx * currentPosScale;
+                  optY = -cdz * currentPosScale;
+                  optZ = cdy * currentPosScale;
+                } else {
+                  // Frontal: Cam X -> Lateral (Left/Right), -Cam Y -> Vertical Elevation (Up/Down), -Cam Z -> Depth (Forward/Backward)
+                  optX = cdx * currentPosScale;
+                  optY = -cdy * currentPosScale;
+                  optZ = -cdz * currentPosScale;
+                }
+
+                targetPos.set(optX, optY, optZ);
+              } else if (data.analytics && data.analytics.pos_cm) {
                 const an = data.analytics;
                 const px = an.pos_cm[0] - tarePos.x;
                 const py = an.pos_cm[1] - tarePos.y;
-                const pz = Math.max(0.0, an.pos_cm[2] - tarePos.z);
+                const pz = an.pos_cm[2] - tarePos.z;
                 
                 // Vector in raw world coordinate frame
                 const rawVec = new THREE.Vector3(px * currentPosScale, 0, -py * currentPosScale);
@@ -1736,7 +1761,7 @@
                   rawVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), euler.y);
                 }
 
-                const elevY = Math.max(0.0, pz * currentPosScale);
+                const elevY = pz * currentPosScale;
                 targetPos.set(
                   rawVec.x,
                   elevY,

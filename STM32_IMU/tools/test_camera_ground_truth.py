@@ -302,3 +302,55 @@ def test_trained_multi_view_enclosure_detector():
         assert score >= 0.80
         assert "front" in view.lower() or "textured" in view.lower()
 
+
+def test_tracker_persistence_across_single_frame_dropout():
+    """Verify tracker persists state across brief single-frame dropouts instead of snapping to center."""
+    tracker = CameraGroundTruthTracker(video_source=-1, marker_size_cm=4.0)
+
+    # Frame 1: Dark block at (200, 150)
+    canvas1 = np.ones((480, 640, 3), dtype=np.uint8) * 200
+    cv2.rectangle(canvas1, (200, 150), (280, 230), (15, 15, 15), -1)
+    tracker.set_tracking_roi((200, 150, 80, 80))
+    _, data1 = tracker.process_frame(canvas1)
+    assert data1["detected"] is True
+    assert tracker.object_tracker is not None
+
+    # Frame 2: Brief glare / dropout frame (blank white frame)
+    canvas_dropout = np.ones((480, 640, 3), dtype=np.uint8) * 255
+    _, data2 = tracker.process_frame(canvas_dropout)
+    # Tracker should NOT be destroyed immediately on 1 blank frame; must persist grace period
+    assert tracker.object_tracker is not None or tracker.object_bbox is not None
+    assert tracker.tracking_lost_count > 0
+
+    # Frame 3: Block reappears at (210, 150) (moved slightly right)
+    canvas3 = np.ones((480, 640, 3), dtype=np.uint8) * 200
+    cv2.rectangle(canvas3, (210, 150), (290, 230), (15, 15, 15), -1)
+    _, data3 = tracker.process_frame(canvas3)
+    assert data3["detected"] is True
+    assert tracker.tracking_lost_count == 0
+
+
+def test_optical_depth_smoothing_under_aspect_change():
+    """Verify that pinhole depth estimation is smoothed and does not double when block rotates."""
+    tracker = CameraGroundTruthTracker(video_source=-1, marker_size_cm=4.0)
+
+    # Horizontal block: 120 x 60 px
+    canvas_h = np.ones((480, 640, 3), dtype=np.uint8) * 200
+    cv2.rectangle(canvas_h, (200, 150), (320, 210), (15, 15, 15), -1)
+    tracker.set_tracking_roi((200, 150, 120, 60))
+    _, data_h = tracker.process_frame(canvas_h)
+    z_h = data_h["pos_cm"][2]
+    assert z_h > 0.0
+
+    # Vertical / rotated block of same area: 60 x 120 px
+    canvas_v = np.ones((480, 640, 3), dtype=np.uint8) * 200
+    cv2.rectangle(canvas_v, (200, 150), (260, 270), (15, 15, 15), -1)
+    tracker.set_tracking_roi((200, 150, 60, 120))
+    _, data_v = tracker.process_frame(canvas_v)
+    z_v = data_v["pos_cm"][2]
+
+    # Ratio of z_h to z_v should be close to 1.0 (difference < 15%)
+    ratio = z_v / max(0.01, z_h)
+    assert 0.85 < ratio < 1.15, f"Depth jumped dramatically across aspect ratio change: z_h={z_h}, z_v={z_v}"
+
+

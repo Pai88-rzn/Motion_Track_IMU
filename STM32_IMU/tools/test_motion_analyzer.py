@@ -31,7 +31,7 @@ class TestSurgicalMotionAnalyzer(unittest.TestCase):
             cr = math.cos(math.radians(roll) / 2.0)
             sr = math.sin(math.radians(roll) / 2.0)
             gx = 35.0 * 2.0 * math.pi * math.cos(2.0 * math.pi * 1.0 * t)
-            ax = 1.2 * math.sin(2.0 * math.pi * 1.0 * t)
+            ax = 1.2 * math.cos(2.0 * math.pi * 1.0 * t)
             analyzer.update(
                 ts=t, qw=cr, qx=sr, qy=0.0, qz=0.0,
                 ax_mps2=ax, ay_mps2=0.0, az_mps2=0.0,
@@ -298,6 +298,65 @@ class TestSurgicalMotionAnalyzer(unittest.TestCase):
             gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
         )
         self.assertIsNotNone(snap3)
+
+    def test_position_persists_during_prolonged_stationary_pause(self):
+        """Verifies that when an IMU translates and stops, position holds steady and does not snap back to 0."""
+        analyzer = SurgicalMotionAnalyzer(fs_hz=100.0)
+
+        # 1. Slide along X for 0.5s: accel then decel to come to a stop
+        for step in range(50):
+            t = step * 0.01
+            if t < 0.25:
+                ax = 1.8 * math.sin(t / 0.25 * math.pi)
+            else:
+                ax = -1.8 * math.sin((t - 0.25) / 0.25 * math.pi)
+            analyzer.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=ax, ay_mps2=0.0, az_mps2=0.0,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+
+        snap_stop = analyzer.update(
+            ts=0.50, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+            ax_mps2=0.0, ay_mps2=0.0, az_mps2=0.0,
+            gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+        )
+        pos_at_stop = snap_stop["pos_cm"][0]
+        self.assertGreater(pos_at_stop, 2.0, f"Displacement along X failed to build: {pos_at_stop} cm")
+
+        # 2. Remain stationary for 2.0 full seconds (200 frames @ 100 Hz)
+        final_snap = None
+        for step in range(51, 251):
+            t = step * 0.01
+            final_snap = analyzer.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=0.0, ay_mps2=0.0, az_mps2=0.0,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+
+        pos_after_pause = final_snap["pos_cm"][0]
+        # Must retain at least 90% of position after holding still for 2.0s; MUST NOT collapse to 0.0!
+        self.assertGreater(
+            pos_after_pause, 0.90 * pos_at_stop,
+            f"Position prematurely decayed/snapped back to origin: was {pos_at_stop:.2f} cm, now {pos_after_pause:.2f} cm"
+        )
+
+    def test_bidirectional_z_elevation_downward(self):
+        """Verifies that downward motion produces negative Z elevation and is not clamped to 0.0."""
+        analyzer = SurgicalMotionAnalyzer(fs_hz=100.0)
+
+        # Move downward along Z: negative acceleration pulse
+        for step in range(30):
+            t = step * 0.01
+            az = -1.6 * math.sin(step / 30.0 * math.pi)
+            snap = analyzer.update(
+                ts=t, qw=1.0, qx=0.0, qy=0.0, qz=0.0,
+                ax_mps2=0.0, ay_mps2=0.0, az_mps2=az,
+                gx_dps=0.0, gy_dps=0.0, gz_dps=0.0
+            )
+
+        pos_z = snap["pos_cm"][2]
+        self.assertLess(pos_z, -1.0, f"Downward Z displacement was clamped to zero or positive: {pos_z} cm")
 
 
 if __name__ == "__main__":
